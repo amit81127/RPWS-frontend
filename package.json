@@ -1,0 +1,11 @@
+{
+  "name": "aitm-vote",
+  "version": "1.0.0",
+  "private": true,
+  "description": "AITM Voting System Monorepo Root",
+  "scripts": {
+    "build": "cd backend && npm install",
+    "start": "cd backend && npm start",
+    "postinstall": "cd backend && npm install"
+  }
+}

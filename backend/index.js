@@ -35,6 +35,57 @@ const app = express();
 // Trust Render's single upstream reverse proxy hop (Cloudflare / Render load balancer)
 app.set("trust proxy", 1);
 
+// ---------- 1. CORS Configuration (Registered FIRST) ----------
+const ALLOWED_ORIGINS = [
+  "https://aitm-vote.vercel.app",
+  "http://localhost:3000",
+  "http://127.0.0.1:3000",
+];
+
+// Support comma-separated FRONTEND_URL environment variable
+if (process.env.FRONTEND_URL) {
+  process.env.FRONTEND_URL.split(",").forEach((origin) => {
+    const trimmed = origin.trim().replace(/\/+$/, "");
+    if (trimmed && !ALLOWED_ORIGINS.includes(trimmed)) {
+      ALLOWED_ORIGINS.push(trimmed);
+    }
+  });
+}
+
+const corsOptions = {
+  origin: (origin, callback) => {
+    // Allow non-browser requests (e.g. curl, health checks, server-to-server)
+    if (!origin) return callback(null, true);
+
+    const isExplicitlyAllowed = ALLOWED_ORIGINS.includes(origin);
+    const isVercelPreview = /^https:\/\/aitm-vote[a-z0-9-]*\.vercel\.app$/.test(origin);
+
+    if (isExplicitlyAllowed || isVercelPreview) {
+      callback(null, true);
+    } else {
+      callback(null, false);
+    }
+  },
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+  allowedHeaders: [
+    "Content-Type",
+    "Authorization",
+    "X-Requested-With",
+    "Accept",
+    "Origin",
+    "Cache-Control",
+  ],
+  exposedHeaders: ["Content-Length", "X-Cache", "ETag"],
+  credentials: true,
+  optionsSuccessStatus: 200,
+  maxAge: 86400,
+};
+
+app.use(cors(corsOptions));
+// In Express 5, wildcard route for options uses regex /(.*)/
+app.options(/(.*)/, cors(corsOptions));
+
+// ---------- 2. Body Parsing, Compression & Static Assets ----------
 // Gzip / Brotli compression for ultra-fast payload delivery
 app.use(compression({
   threshold: 1024, // Compress responses larger than 1KB
@@ -44,16 +95,6 @@ app.use(express.json());
 
 // Serve static uploads
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
-
-// CORS configuration
-const allowedOrigin = process.env.FRONTEND_URL || "*";
-app.use(
-  cors({
-    origin: allowedOrigin,
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    credentials: allowedOrigin !== "*",
-  })
-);
 
 // Request timeout middleware (30s ceiling to prevent connection socket exhaustion)
 app.use((req, res, next) => {
@@ -1002,17 +1043,17 @@ app.get("/health", (req, res) => {
   const metrics = dbMetrics.getMetrics();
   const mem = process.memoryUsage();
 
-  res.status(isConnected ? 200 : 503).json({
+  res.status(200).json({
     status: isConnected ? "OK" : "DEGRADED",
-    database: isConnected ? "Connected" : "Disconnected",
+    database: isConnected ? "Connected" : (mongoose.connection.readyState === 2 ? "Connecting" : "Disconnected"),
     time: new Date().toISOString(),
     uptimeSeconds: Math.floor(process.uptime()),
     lastVoteActivityAt: getLastVoteActivity(),
     cache: publicFeedCache.getMetrics(),
     pool: {
       ...metrics.pool,
-      maxPoolSize: parseInt(process.env.MONGO_MAX_POOL_SIZE, 10) || 100,
-      minPoolSize: parseInt(process.env.MONGO_MIN_POOL_SIZE, 10) || 20,
+      maxPoolSize: parseInt(process.env.MONGO_MAX_POOL_SIZE, 10) || 50,
+      minPoolSize: parseInt(process.env.MONGO_MIN_POOL_SIZE, 10) || 5,
     },
     dbLatency: metrics.commands,
     memory: {
@@ -1029,17 +1070,11 @@ app.get("/", (req, res) => res.send("🚀 Rating API Running"));
 mongoose.set("strictQuery", false);
 
 // Attach connection life-cycle event listeners
-mongoose.connection.on("connected", () => {
-  console.log("ℹ️ Mongoose default connection open");
-});
 mongoose.connection.on("error", (err) => {
   console.error("❌ Mongoose default connection error:", err.message);
 });
 mongoose.connection.on("disconnected", () => {
   console.warn("⚠️ Mongoose default connection disconnected");
-});
-mongoose.connection.on("reconnected", () => {
-  console.log("🔄 Mongoose default connection reconnected");
 });
 
 // Instrument connection for pool and latency telemetry
@@ -1051,7 +1086,6 @@ let isShuttingDown = false;
 function gracefulShutdown(signal) {
   if (isShuttingDown) return;
   isShuttingDown = true;
-  console.log(`\n🛑 Received ${signal}. Starting graceful shutdown...`);
 
   const shutdownTimeout = setTimeout(() => {
     console.error("⚠️ Forced shutdown after 10s timeout.");
@@ -1061,10 +1095,8 @@ function gracefulShutdown(signal) {
 
   if (server) {
     server.close(async () => {
-      console.log("🔒 HTTP server closed to new incoming requests.");
       try {
         await mongoose.connection.close(false);
-        console.log("✅ MongoDB connection pool closed cleanly.");
         clearTimeout(shutdownTimeout);
         process.exit(0);
       } catch (closeErr) {
@@ -1089,26 +1121,24 @@ if (process.env.NODE_ENV !== "test") {
     process.exit(1);
   }
 
+  // Bind HTTP server immediately so Render health checks and preflight OPTIONS succeed right away
+  server = app.listen(PORT, "0.0.0.0");
+
   const mongooseOptions = {
-    serverSelectionTimeoutMS: parseInt(process.env.MONGO_SERVER_SELECTION_TIMEOUT_MS, 10) || 5000,
-    maxPoolSize: parseInt(process.env.MONGO_MAX_POOL_SIZE, 10) || 100,
-    minPoolSize: parseInt(process.env.MONGO_MIN_POOL_SIZE, 10) || 20,
+    serverSelectionTimeoutMS: parseInt(process.env.MONGO_SERVER_SELECTION_TIMEOUT_MS, 10) || 10000,
+    maxPoolSize: parseInt(process.env.MONGO_MAX_POOL_SIZE, 10) || 50,
+    minPoolSize: parseInt(process.env.MONGO_MIN_POOL_SIZE, 10) || 5,
     maxIdleTimeMS: 30000,
     socketTimeoutMS: 45000,
-    connectTimeoutMS: 10000,
+    connectTimeoutMS: 15000,
     waitQueueTimeoutMS: 10000,
     monitorCommands: true,
   };
 
   mongoose
     .connect(effectiveMongoUrl, mongooseOptions)
-    .then(() => {
-      console.log("✅ MongoDB connected successfully to:", effectiveMongoUrl.replace(/\/\/[^:]+:[^@]+@/, "//***:***@"));
-      server = app.listen(PORT, "0.0.0.0", () => console.log(`🚀 Server running on port ${PORT}`));
-    })
     .catch((err) => {
-      console.error("❌ MongoDB connection error:", err);
-      process.exit(1);
+      console.error("❌ MongoDB connection error:", err.message);
     });
 }
 
