@@ -12,7 +12,6 @@ import Signup from "./Page/Signup";
 import Login from "./Page/Login";
 import { AuthProvider } from "./components/AuthContext";
 import PrivateRoute from "./components/PrivateRoute";
-import Header from "./components/Header";
 import AdminPanel from "./Page/AdminPanel";
 import About from "./Page/AboutPage";
 

@@ -21,10 +21,10 @@ const Footer = () => {
               The official platform for rating and reviewing projects, events, and participants at Angadi Institute of Technology and Management. Fostering excellence through transparent evaluation.
             </p>
             <div className="d-flex gap-3 mt-3">
-              <a href="#" className="text-white social-icon-hover"><FaFacebookF /></a>
-              <a href="#" className="text-white social-icon-hover"><FaTwitter /></a>
-              <a href="#" className="text-white social-icon-hover"><FaInstagram /></a>
-              <a href="#" className="text-white social-icon-hover"><FaLinkedinIn /></a>
+              <a href="https://facebook.com" target="_blank" rel="noopener noreferrer" aria-label="Facebook" className="text-white social-icon-hover"><FaFacebookF /></a>
+              <a href="https://twitter.com" target="_blank" rel="noopener noreferrer" aria-label="Twitter" className="text-white social-icon-hover"><FaTwitter /></a>
+              <a href="https://instagram.com" target="_blank" rel="noopener noreferrer" aria-label="Instagram" className="text-white social-icon-hover"><FaInstagram /></a>
+              <a href="https://linkedin.com" target="_blank" rel="noopener noreferrer" aria-label="LinkedIn" className="text-white social-icon-hover"><FaLinkedinIn /></a>
             </div>
           </div>
 
@@ -45,8 +45,8 @@ const Footer = () => {
             <ul className="list-unstyled">
               <li className="mb-2"><Link className="text-white-50 text-decoration-none hover-white" to="/login">Admin Login</Link></li>
               <li className="mb-2"><Link className="text-white-50 text-decoration-none hover-white" to="/register">Student Registration</Link></li>
-              <li className="mb-2"><a href="#" className="text-white-50 text-decoration-none hover-white">Privacy Policy</a></li>
-              <li className="mb-2"><a href="#" className="text-white-50 text-decoration-none hover-white">Terms of Service</a></li>
+              <li className="mb-2"><span className="text-white-50">Privacy Policy</span></li>
+              <li className="mb-2"><span className="text-white-50">Terms of Service</span></li>
             </ul>
           </div>
 

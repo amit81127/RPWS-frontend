@@ -27,6 +27,14 @@ const fetcher = (url) => axios.get(url).then((res) => res.data);
 const VOTE_STORAGE_KEY = "guestVotes";
 const VOTE_COOLDOWN_MS = 12 * 60 * 60 * 1000;
 
+const getGuestVotes = () => {
+  try {
+    return JSON.parse(localStorage.getItem(VOTE_STORAGE_KEY)) || {};
+  } catch {
+    return {};
+  }
+};
+
 // ---- Optimized Lazy Image ----
 const LazyImage = ({ src, alt }) => {
   const { ref, inView } = useInView({
@@ -161,7 +169,7 @@ const ParticipantsPage = () => {
     return `${API_URL}/allParticipants?page=${pageIndex + 1}&limit=6`;
   };
 
-  const { data, error, mutate, size, setSize, isLoading } = useSWRInfinite(
+  const { data, mutate, size, setSize, isLoading } = useSWRInfinite(
     getKey,
     fetcher,
     {
@@ -180,14 +188,6 @@ const ParticipantsPage = () => {
   const isReachingEnd = isEmpty || (data && data[data.length - 1]?.data?.length < 6);
 
   const loading = isLoading && !data;
-
-  const getGuestVotes = () => {
-    try {
-      return JSON.parse(localStorage.getItem(VOTE_STORAGE_KEY)) || {};
-    } catch {
-      return {};
-    }
-  };
 
   // ---- Voting Logic ----
   const handleVote = useCallback(
@@ -273,7 +273,7 @@ const ParticipantsPage = () => {
     window.open(links[platform], "_blank");
   };
 
-  const guestVotes = useMemo(() => getGuestVotes(), [allParticipants]);
+  const guestVotes = useMemo(() => getGuestVotes(), []);
 
   return (
     <Container sx={{ py: 6 }}>
