@@ -35,8 +35,8 @@ const Signup = () => {
       toast.error("Name is required");
       return false;
     }
-    const emailRegex = /^[0-9]{4}[A-Za-z]{3}[0-9]{3}@axiscolleges\.in$/;
-    if (!emailRegex.test(formData.email)) {
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!formData.email.trim() || !emailRegex.test(formData.email.trim())) {
       toast.error("Invalid email address");
       return false;
     }
@@ -53,7 +53,12 @@ const Signup = () => {
 
     setLoading(true);
     try {
-      const { data } = await axios.post(`${API_URL}/signup`, formData);
+      const payload = {
+        name: formData.name.trim(),
+        email: formData.email.trim().toLowerCase(),
+        password: formData.password,
+      };
+      const { data } = await axios.post(`${API_URL}/signup`, payload);
       login(data.token);
       toast.success("Signup successful!");
       setTimeout(() => navigate("/"), 1000);

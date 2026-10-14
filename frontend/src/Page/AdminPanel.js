@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useRef, useCallback } from "react";
 import axios from "axios";
 import {
   Container,
@@ -20,6 +20,8 @@ import {
   ListItemButton,
   ListItemText,
   Tooltip,
+  Pagination,
+  Alert,
 } from "@mui/material";
 import DeleteIcon from "@mui/icons-material/Delete";
 import PersonAddIcon from "@mui/icons-material/PersonAdd";
@@ -35,38 +37,91 @@ const sidebarCollapsedWidth = 60;
 const sidebarExpandedWidth = 180;
 
 const AdminPanel = () => {
-  
   const [participants, setParticipants] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
   const [search, setSearch] = useState("");
   const [deleteDialog, setDeleteDialog] = useState({ open: false, id: null });
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
-  // Fetch participants
-  const fetchParticipants = async () => {
-    try {
-      setLoading(true);
-      // Fetch with a high limit to get all participants for admin management
-      const { data } = await axios.get(`${API_URL}/allParticipants?limit=1000`);
-      
-      if (data.data && Array.isArray(data.data)) {
-        setParticipants(data.data);
-      } else if (Array.isArray(data)) {
-        setParticipants(data);
-      } else {
-        setParticipants([]);
+  // Pagination state (default limit 50 aligned with backend max limit)
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
+  const [totalPages, setTotalPages] = useState(1);
+  const limit = 50;
+
+  const activeRequestRef = useRef(null);
+
+  // Fetch participants with abort controller to prevent duplicate/stale requests
+  const fetchParticipants = useCallback(
+    async (targetPage = 1, signal) => {
+      if (activeRequestRef.current) {
+        activeRequestRef.current.abort();
       }
-    } catch (err) {
-      console.error("Error fetching participants:", err);
-      setParticipants([]);
-    } finally {
-      setLoading(false);
-    }
-  };
+      const controller = new AbortController();
+      activeRequestRef.current = controller;
+
+      setLoading(true);
+      setError(null);
+
+      try {
+        const { data } = await axios.get(
+          `${API_URL}/allParticipants?page=${targetPage}&limit=${limit}`,
+          { signal: signal || controller.signal }
+        );
+
+        let items = [];
+        if (data && Array.isArray(data.data)) {
+          items = data.data;
+        } else if (Array.isArray(data)) {
+          items = data;
+        }
+
+        setParticipants(items);
+
+        if (data && data.meta) {
+          const metaTotal =
+            typeof data.meta.total === "number" ? data.meta.total : items.length;
+          setTotal(metaTotal);
+          setTotalPages(Math.max(1, Math.ceil(metaTotal / limit)));
+        } else {
+          setTotal(items.length);
+          setTotalPages(1);
+        }
+      } catch (err) {
+        if (
+          axios.isCancel?.(err) ||
+          err.name === "CanceledError" ||
+          err.code === "ERR_CANCELED"
+        ) {
+          return;
+        }
+        console.error("Error fetching participants:", err);
+        setError("Failed to load participants. Please try again.");
+        setParticipants([]);
+      } finally {
+        if (activeRequestRef.current === controller) {
+          activeRequestRef.current = null;
+          setLoading(false);
+        }
+      }
+    },
+    [limit]
+  );
 
   useEffect(() => {
-    fetchParticipants();
-  }, []);
+    const controller = new AbortController();
+    fetchParticipants(page, controller.signal);
+    return () => {
+      controller.abort();
+    };
+  }, [page, fetchParticipants]);
+
+  const handlePageChange = (event, value) => {
+    if (value !== page && !loading) {
+      setPage(value);
+    }
+  };
 
   // Delete participant
   const handleDelete = async (participantId) => {
@@ -75,8 +130,18 @@ const AdminPanel = () => {
       await axios.delete(`${API_URL}/deleteParticipant/${participantId}`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
-      setParticipants((prev) => prev.filter((p) => p._id !== participantId));
+      const remaining = participants.filter((p) => p._id !== participantId);
+      setParticipants(remaining);
+      setTotal((prev) => {
+        const nextTotal = Math.max(0, prev - 1);
+        setTotalPages(Math.max(1, Math.ceil(nextTotal / limit)));
+        return nextTotal;
+      });
       setDeleteDialog({ open: false, id: null });
+
+      if (remaining.length === 0 && page > 1) {
+        setPage((prevPage) => prevPage - 1);
+      }
     } catch (err) {
       console.error("Error deleting participant:", err);
       alert(err.response?.data?.error || "Failed to delete participant.");
@@ -202,84 +267,124 @@ const AdminPanel = () => {
           <Box textAlign="center" mt={10}>
             <CircularProgress />
           </Box>
+        ) : error ? (
+          <Box textAlign="center" mt={4} mb={4}>
+            <Alert severity="error" sx={{ maxWidth: 500, mx: "auto", mb: 2 }}>
+              {error}
+            </Alert>
+            <Button variant="contained" onClick={() => fetchParticipants(page)}>
+              Retry
+            </Button>
+          </Box>
         ) : (
-          <Grid container spacing={2}>
-            {filteredParticipants.map((participant, index) => (
-              <Grid item xs={12} sm={6} md={4} key={participant._id}>
-                <motion.div
-                  whileHover={{ scale: 1.05 }}
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.3, delay: index * 0.05 }}
-                >
-                  <Box
-                    sx={{
-                      display: "flex",
-                      flexDirection: "column",
-                      alignItems: "center",
-                      p: 3,
-                      borderRadius: 3,
-                      boxShadow: 4,
-                      bgcolor: "#ffffffdd",
-                      backdropFilter: "blur(8px)",
-                      border: "1px solid rgba(0,0,0,0.1)",
-                      transition: "0.3s",
-                      "&:hover": {
-                        transform: "translateY(-5px)",
-                        boxShadow: 10,
-                        borderColor: "rgba(0,0,0,0.2)",
-                      },
-                    }}
-                  >
-                    <Avatar
-                      alt={participant.name}
-                      src={participant.image}
-                      sx={{ width: 70, height: 70, mb: 2 }}
-                    />
-                    <Typography variant="h6" fontWeight="bold" align="center">
-                      {participant.name}
-                    </Typography>
-                    <Typography
-                      variant="body2"
-                      color="text.secondary"
-                      align="center"
-                      mb={1}
+          <>
+            {filteredParticipants.length === 0 ? (
+              <Box textAlign="center" mt={6} p={4} bgcolor="rgba(0,0,0,0.02)" borderRadius={3}>
+                <Typography variant="h6" color="text.secondary">
+                  {search ? "No participants match your search criteria." : "No participants found."}
+                </Typography>
+              </Box>
+            ) : (
+              <Grid container spacing={2}>
+                {filteredParticipants.map((participant, index) => (
+                  <Grid item xs={12} sm={6} md={4} key={participant._id}>
+                    <motion.div
+                      whileHover={{ scale: 1.05 }}
+                      initial={{ opacity: 0, y: 20 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ duration: 0.3, delay: index * 0.05 }}
                     >
-                      {participant.email}
-                    </Typography>
-                    <Chip
-                      label={participant.department || participant.projectName || "General"}
-                      color="primary"
-                      size="small"
-                      sx={{
-                        mb: 1,
-                        "&:hover": { transform: "scale(1.1)", transition: "0.3s" },
-                      }}
-                    />
-                    {/* Team Number */}
-                    {participant.teamNo && (
-                      <Typography
-                        variant="body2"
-                        color="secondary.main"
-                        align="center"
-                        mb={2}
+                      <Box
+                        sx={{
+                          display: "flex",
+                          flexDirection: "column",
+                          alignItems: "center",
+                          p: 3,
+                          borderRadius: 3,
+                          boxShadow: 4,
+                          bgcolor: "#ffffffdd",
+                          backdropFilter: "blur(8px)",
+                          border: "1px solid rgba(0,0,0,0.1)",
+                          transition: "0.3s",
+                          "&:hover": {
+                            transform: "translateY(-5px)",
+                            boxShadow: 10,
+                            borderColor: "rgba(0,0,0,0.2)",
+                          },
+                        }}
                       >
-                        Team No: {participant.teamNo}
-                      </Typography>
-                    )}
-                    <IconButton
-                      color="error"
-                      onClick={() =>
-                        setDeleteDialog({ open: true, id: participant._id })
-                      }
-                    >
-                      <DeleteIcon />
-                    </IconButton>
-                  </Box>
-                </motion.div>
+                        <Avatar
+                          alt={participant.name}
+                          src={participant.image}
+                          sx={{ width: 70, height: 70, mb: 2 }}
+                        />
+                        <Typography variant="h6" fontWeight="bold" align="center">
+                          {participant.name}
+                        </Typography>
+                        <Typography
+                          variant="body2"
+                          color="text.secondary"
+                          align="center"
+                          mb={1}
+                        >
+                          {participant.email}
+                        </Typography>
+                        <Chip
+                          label={participant.department || participant.projectName || "General"}
+                          color="primary"
+                          size="small"
+                          sx={{
+                            mb: 1,
+                            "&:hover": { transform: "scale(1.1)", transition: "0.3s" },
+                          }}
+                        />
+                        {/* Team Number */}
+                        {participant.teamNo && (
+                          <Typography
+                            variant="body2"
+                            color="secondary.main"
+                            align="center"
+                            mb={2}
+                          >
+                            Team No: {participant.teamNo}
+                          </Typography>
+                        )}
+                        <IconButton
+                          color="error"
+                          aria-label={`delete-${participant._id}`}
+                          onClick={() =>
+                            setDeleteDialog({ open: true, id: participant._id })
+                          }
+                        >
+                          <DeleteIcon />
+                        </IconButton>
+                      </Box>
+                    </motion.div>
+                  </Grid>
+                ))}
               </Grid>
-            ))}
-          </Grid>
+            )}
+
+            {/* Pagination Controls */}
+            {total > 0 && (
+              <Box sx={{ display: "flex", flexDirection: "column", alignItems: "center", mt: 4, mb: 2 }}>
+                <Typography variant="body2" color="text.secondary" mb={1} aria-label="pagination-info">
+                  Showing {participants.length ? (page - 1) * limit + 1 : 0} -{" "}
+                  {Math.min(page * limit, total)} of {total} projects (Page {page} of {totalPages})
+                </Typography>
+                <Pagination
+                  count={totalPages}
+                  page={page}
+                  onChange={handlePageChange}
+                  color="primary"
+                  showFirstButton
+                  showLastButton
+                  disabled={loading}
+                  aria-label="admin-pagination"
+                />
+              </Box>
+            )}
+          </>
         )}
 
         {/* Delete Confirmation Dialog */}

@@ -2,21 +2,12 @@ import React, { useContext, useState, useRef, useEffect } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { AuthContext } from "./AuthContext";
 import { jwtDecode } from "jwt-decode";
-import {
-  SignedIn,
-  SignedOut,
-  SignInButton,
-  SignUpButton,
-  UserButton,
-  useUser,
-} from "@clerk/clerk-react";
 import "bootstrap/dist/css/bootstrap.min.css";
 import "bootstrap/dist/js/bootstrap.bundle.min.js";
 
 const Navbar = () => {
   const { token, logout } = useContext(AuthContext);
   const navigate = useNavigate();
-  const { isSignedIn } = useUser();
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const dropdownRef = useRef();
 
@@ -48,7 +39,7 @@ const Navbar = () => {
   return (
     <nav className="navbar navbar-expand-lg navbar-custom sticky-top">
       <div className="container">
-        {/* ✅ Brand Section */}
+        {/* Brand Section */}
         <Link
           className="navbar-brand d-flex align-items-center gap-3"
           to="/"
@@ -65,12 +56,16 @@ const Navbar = () => {
               objectFit: "contain",
               background: "white",
               padding: "2px",
-              border: "2px solid var(--accent-gold)"
+              border: "2px solid var(--accent-gold)",
             }}
           />
           <div className="d-flex flex-column">
-            <span className="fw-bold fs-5 text-white" style={{ letterSpacing: "1px" }}>AITM</span>
-            <span className="fs-6 text-gold" style={{ fontSize: "0.8rem", fontWeight: "500" }}>Rating System</span>
+            <span className="fw-bold fs-5 text-white" style={{ letterSpacing: "1px" }}>
+              AITM
+            </span>
+            <span className="fs-6 text-gold" style={{ fontSize: "0.8rem", fontWeight: "500" }}>
+              Rating System
+            </span>
           </div>
         </Link>
 
@@ -90,7 +85,7 @@ const Navbar = () => {
         {/* Navbar Links */}
         <div className="collapse navbar-collapse" id="navbarNav">
           <ul className="navbar-nav ms-auto align-items-center gap-3">
-            {/* Common Pages */}
+            {/* Navigation Links */}
             <li className="nav-item">
               <Link className="nav-link" to="/">
                 Home
@@ -103,66 +98,46 @@ const Navbar = () => {
               </Link>
             </li>
 
-            {/* Shown only after Clerk login */}
-            <SignedIn>
-              <li className="nav-item">
-                <Link className="nav-link" to="/participants">
-                  Participants
-                </Link>
-              </li>
+            <li className="nav-item">
+              <Link className="nav-link" to="/participants">
+                Participants
+              </Link>
+            </li>
 
-              <li className="nav-item">
-                <Link className="nav-link" to="/contact">
-                  Contact
-                </Link>
-              </li>
-            </SignedIn>
+            <li className="nav-item">
+              <Link className="nav-link" to="/winners">
+                Winners
+              </Link>
+            </li>
 
-            {/* ✅ Clerk Login/Signup Buttons (redirect to Home after login/signup) */}
-            <SignedOut>
-              <li className="nav-item">
-                <SignInButton mode="modal" redirectUrl="/">
-                  <button className="btn btn-outline-light btn-sm px-3">Login</button>
-                </SignInButton>
-              </li>
-              <li className="nav-item">
-                <SignUpButton mode="modal" redirectUrl="/">
-                  <button className="btn btn-gold-custom btn-sm px-3">Sign Up</button>
-                </SignUpButton>
-              </li>
-            </SignedOut>
+            <li className="nav-item">
+              <Link className="nav-link" to="/contact">
+                Contact
+              </Link>
+            </li>
 
-            {/* ✅ Clerk Logged-In User */}
-            <SignedIn>
-              <li className="nav-item">
-                <UserButton
-                  appearance={{
-                    elements: {
-                      avatarBox: {
-                        width: "35px",
-                        height: "35px",
-                        border: "2px solid var(--accent-gold)"
-                      },
-                    },
-                  }}
-                  afterSignOutUrl="/"
-                />
-              </li>
-            </SignedIn>
-
-            {/* ✅ Admin Login (only visible if Clerk user NOT signed in) */}
-            {!isSignedIn && !token && (
-              <li className="nav-item">
-                <Link className="btn btn-outline-light btn-sm px-3" to="/login">
-                  Admin
-                </Link>
-              </li>
+            {/* Unauthenticated: Login & Sign Up buttons */}
+            {!token && (
+              <>
+                <li className="nav-item">
+                  <Link className="btn btn-outline-light btn-sm px-3" to="/login">
+                    Login
+                  </Link>
+                </li>
+                <li className="nav-item">
+                  <Link className="btn btn-gold-custom btn-sm px-3" to="/signup">
+                    Sign Up
+                  </Link>
+                </li>
+              </>
             )}
 
-            {/* ✅ Admin Dropdown (only if admin is logged in) */}
-            {token && !isSignedIn && userRole === "admin" && (
+            {/* Authenticated Admin Dropdown */}
+            {token && userRole === "admin" && (
               <li className="nav-item dropdown" ref={dropdownRef}>
                 <button
+                  type="button"
+                  aria-label="Admin Menu"
                   className="btn btn-gold-custom btn-sm rounded-circle d-flex align-items-center justify-content-center"
                   style={{
                     width: "35px",
@@ -181,11 +156,12 @@ const Navbar = () => {
                       borderRadius: "8px",
                       position: "absolute",
                       right: 0,
-                      minWidth: "150px"
+                      minWidth: "150px",
                     }}
                   >
                     <li>
                       <button
+                        type="button"
                         className="dropdown-item"
                         onClick={() => {
                           navigate("/admin");
@@ -200,6 +176,7 @@ const Navbar = () => {
                     </li>
                     <li>
                       <button
+                        type="button"
                         className="dropdown-item text-danger"
                         onClick={handleLogout}
                       >
@@ -211,10 +188,11 @@ const Navbar = () => {
               </li>
             )}
 
-            {/* ✅ Student / Regular User Logout (if logged in with custom token) */}
-            {token && !isSignedIn && userRole !== "admin" && (
+            {/* Authenticated Student / Non-Admin Logout */}
+            {token && userRole !== "admin" && (
               <li className="nav-item">
                 <button
+                  type="button"
                   className="btn btn-outline-light btn-sm px-3"
                   onClick={handleLogout}
                 >

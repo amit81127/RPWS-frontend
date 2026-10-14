@@ -13,6 +13,7 @@ const VoteModel = require("./models/voteModel");
 const { authMiddleware, adminOnly, getJwtSecret } = require("./middleware/auth");
 const { handleUpload, cloudinary } = require("./middleware/upload");
 const { reconcileVotes } = require("./services/voteService");
+const { authLimiter, uploadLimiter, voteLimiter, readLimiter } = require("./middleware/rateLimiter");
 
 const PORT = parseInt(process.env.PORT) || 5000;
 const MONGO_URL = process.env.MONGO_URL;
@@ -25,6 +26,10 @@ if (!MONGO_URL && process.env.NODE_ENV === "production") {
 const effectiveMongoUrl = MONGO_URL || "mongodb://127.0.0.1:27017/ratingdb";
 
 const app = express();
+
+// Trust Render's single upstream reverse proxy hop (Cloudflare / Render load balancer)
+app.set("trust proxy", 1);
+
 app.use(express.json());
 
 // Serve static uploads
@@ -112,7 +117,7 @@ app.get("/participantImage/:id", async (req, res) => {
 // ---------- AUTH ROUTES ----------
 
 // Signup (only student role allowed; passwords hashed once via UserSchema pre-save)
-app.post("/signup", async (req, res) => {
+app.post("/signup", authLimiter, async (req, res) => {
   try {
     const { name, email, password } = req.body;
     if (!name || typeof name !== "string" || !name.trim()) {
@@ -126,6 +131,11 @@ app.post("/signup", async (req, res) => {
     }
 
     const normalizedEmail = email.trim().toLowerCase();
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(normalizedEmail)) {
+      return res.status(400).json({ error: "Invalid email address format" });
+    }
+
     const exists = await User.findOne({ email: normalizedEmail });
     if (exists) {
       return res.status(400).json({ error: "Email already registered" });
@@ -158,7 +168,7 @@ app.post("/signup", async (req, res) => {
 });
 
 // Login
-app.post("/login", async (req, res) => {
+app.post("/login", authLimiter, async (req, res) => {
   try {
     const { email, password } = req.body;
     if (!email || !password) {
@@ -196,8 +206,8 @@ app.post("/login", async (req, res) => {
 
 // ---------- PARTICIPANT ROUTES ----------
 
-// Add Participant (with disk upload protection & 2MB max limit)
-app.post("/addParticipants", handleUpload, async (req, res) => {
+// Add Participant (with rate limiting, disk upload protection & 2MB max limit)
+app.post("/addParticipants", uploadLimiter, handleUpload, async (req, res) => {
   try {
     const { name, department, projectName, email, description, teamNo } = req.body;
     if (!name || typeof name !== "string" || !name.trim()) {
@@ -248,8 +258,8 @@ app.post("/addParticipants", handleUpload, async (req, res) => {
   }
 });
 
-// Get all participants (with server-enforced pagination max limit 50 & lightweight image URLs)
-app.get("/allParticipants", async (req, res) => {
+// Get all participants (with rate limiting, server-enforced pagination max limit 50 & lightweight image URLs)
+app.get("/allParticipants", readLimiter, async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
     const limit = Math.min(Math.max(parseInt(req.query.limit) || 6, 1), 50);
@@ -296,8 +306,8 @@ app.get("/allParticipants", async (req, res) => {
   }
 });
 
-// Get participants sorted by votes desc (Leaderboard with projection optimization & max limit 50)
-app.get("/allParticipantsByVotes", async (req, res) => {
+// Get participants sorted by votes desc (Leaderboard with rate limiting, projection optimization & max limit 50)
+app.get("/allParticipantsByVotes", readLimiter, async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
     const limit = Math.min(Math.max(parseInt(req.query.limit) || 6, 1), 50);
@@ -341,8 +351,8 @@ app.get("/allParticipantsByVotes", async (req, res) => {
   }
 });
 
-// Vote (Atomic increment + Vote ledger with unique { contestId, voterId } constraint)
-app.post("/voteParticipant/:id", authMiddleware, async (req, res) => {
+// Vote (Atomic increment + Vote ledger with voter-keyed rate limiting & unique { contestId, voterId } constraint)
+app.post("/voteParticipant/:id", authMiddleware, voteLimiter, async (req, res) => {
   try {
     const participantId = req.params.id;
     const voterId = req.user.id;

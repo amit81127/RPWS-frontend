@@ -30,6 +30,7 @@ const Register = () => {
   const [formData, setFormData] = useState({
     teamNo: "",
     name: "",
+    projectName: "",
     department: "",
     email: "",
     description: "",
@@ -53,8 +54,8 @@ const Register = () => {
       const data = new FormData();
       data.append("teamNo", formData.teamNo);
       data.append("name", formData.name);
+      data.append("projectName", formData.projectName);
       data.append("department", formData.department);
-      data.append("projectName", formData.department);
       data.append("email", formData.email);
       data.append("description", formData.description);
 
@@ -74,7 +75,15 @@ const Register = () => {
 
       console.log("✅ Participant added:", res.data);
       alert("🎉 Registration Successful!");
-      setFormData({ teamNo: "", name: "", department: "", email: "", description: "", image: null });
+      setFormData({
+        teamNo: "",
+        name: "",
+        projectName: "",
+        department: "",
+        email: "",
+        description: "",
+        image: null,
+      });
     } catch (error) {
       console.error("❌ Error registering participant:", error);
       alert("Something went wrong! Check console for details.");
@@ -192,8 +201,20 @@ const Register = () => {
 
               <Grid item xs={12}>
                 <TextField
-                  name="department"
+                  name="projectName"
                   label="Project Name"
+                  variant="outlined"
+                  fullWidth
+                  required
+                  value={formData.projectName}
+                  onChange={handleChange}
+                />
+              </Grid>
+
+              <Grid item xs={12}>
+                <TextField
+                  name="department"
+                  label="Department"
                   variant="outlined"
                   fullWidth
                   required
