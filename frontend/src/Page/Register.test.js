@@ -96,4 +96,43 @@ describe("Register Component - Project Name and Department Field Mapping", () =>
     expect(calledData.get("name")).toBe("Team CyberShield");
     expect(calledData.get("teamNo")).toBe("77");
   });
+
+  test("Attaches Authorization Bearer token header from localStorage to POST /addParticipants", async () => {
+    Storage.prototype.getItem = jest.fn((key) => {
+      if (key === "token") return "test-student-jwt-token";
+      return null;
+    });
+
+    mockAxiosPost.mockResolvedValueOnce({
+      data: {
+        message: "Participant added",
+        data: { _id: "mock456", name: "Authenticated Team" },
+      },
+    });
+
+    render(<Register />);
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Team Name" }), {
+      target: { value: "Authenticated Team" },
+    });
+    fireEvent.change(screen.getByRole("textbox", { name: "Project Name" }), {
+      target: { value: "Secured Project" },
+    });
+    fireEvent.change(screen.getByRole("textbox", { name: "Department" }), {
+      target: { value: "CSE" },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Register" }));
+
+    await waitFor(() => {
+      expect(mockAxiosPost).toHaveBeenCalledTimes(1);
+    });
+
+    const [calledUrl, calledData, calledConfig] = mockAxiosPost.mock.calls[0];
+    expect(calledUrl).toMatch(/\/addParticipants$/);
+    expect(calledConfig).toBeDefined();
+    expect(calledConfig.headers).toBeDefined();
+    expect(calledConfig.headers["Authorization"]).toBe("Bearer test-student-jwt-token");
+    expect(calledConfig.headers["Content-Type"]).toBe("multipart/form-data");
+  });
 });

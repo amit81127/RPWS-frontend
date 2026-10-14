@@ -200,9 +200,43 @@ describe("2. Invalid credentials and duplicate registration", () => {
 // 3. Project registration and validation
 // =========================================================================
 describe("3. Project registration and validation", () => {
+  let studentToken;
+
+  beforeEach(async () => {
+    const student = await User.create({
+      name: "Registering Student",
+      email: "registrant@college.edu",
+      password: "password123",
+      role: "student",
+    });
+    studentToken = jwt.sign({ id: student._id.toString(), role: "student" }, getJwtSecret());
+  });
+
+  test("Rejects project creation when token is missing with HTTP 401", async () => {
+    const res = await request(app)
+      .post("/addParticipants")
+      .field("name", "Unauthorized Project")
+      .field("department", "Robotics");
+
+    expect(res.status).toBe(401);
+    expect(res.body.error).toMatch(/no token provided/i);
+  });
+
+  test("Rejects project creation when token is invalid or forged with HTTP 401", async () => {
+    const res = await request(app)
+      .post("/addParticipants")
+      .set("Authorization", "Bearer forged.invalid.token")
+      .field("name", "Forged Project")
+      .field("department", "Robotics");
+
+    expect(res.status).toBe(401);
+    expect(res.body.error).toMatch(/invalid or expired token/i);
+  });
+
   test("Successfully creates participant with complete details and reconciles department/projectName", async () => {
     const res = await request(app)
       .post("/addParticipants")
+      .set("Authorization", `Bearer ${studentToken}`)
       .field("name", "Autonomous Rover Project")
       .field("department", "Robotics")
       .field("projectName", "AutoRover v2")
@@ -223,6 +257,7 @@ describe("3. Project registration and validation", () => {
   test("Rejects project creation when name is missing or whitespace only with HTTP 400", async () => {
     const res = await request(app)
       .post("/addParticipants")
+      .set("Authorization", `Bearer ${studentToken}`)
       .field("name", "   ")
       .field("department", "CSE");
 
@@ -233,6 +268,7 @@ describe("3. Project registration and validation", () => {
   test("Correctly falls back when only department or only projectName is provided", async () => {
     const res = await request(app)
       .post("/addParticipants")
+      .set("Authorization", `Bearer ${studentToken}`)
       .field("name", "Fallback Project")
       .field("department", "Computer Science");
 
@@ -244,6 +280,7 @@ describe("3. Project registration and validation", () => {
   test("Submitted projectName and department remain distinct in database records without overwriting", async () => {
     const res = await request(app)
       .post("/addParticipants")
+      .set("Authorization", `Bearer ${studentToken}`)
       .field("teamNo", "77")
       .field("name", "Team CyberShield")
       .field("projectName", "Quantum Encryption Gateway")
@@ -268,12 +305,25 @@ describe("3. Project registration and validation", () => {
 // 4. Image upload and upload failures
 // =========================================================================
 describe("4. Image upload and upload failures", () => {
+  let studentToken;
+
+  beforeEach(async () => {
+    const student = await User.create({
+      name: "Upload Student",
+      email: "uploader@college.edu",
+      password: "password123",
+      role: "student",
+    });
+    studentToken = jwt.sign({ id: student._id.toString(), role: "student" }, getJwtSecret());
+  });
+
   test("Rejects upload exceeding 2 MB size limit with HTTP 400", async () => {
     // Allocate buffer just exceeding 2 MB limit (2 MB + 64 KB)
     const oversizedBuffer = Buffer.alloc(2 * 1024 * 1024 + 64 * 1024, "z");
 
     const res = await request(app)
       .post("/addParticipants")
+      .set("Authorization", `Bearer ${studentToken}`)
       .field("name", "Heavy Image Project")
       .field("department", "Civil")
       .attach("image", oversizedBuffer, { filename: "heavy.jpg", contentType: "image/jpeg" });
@@ -287,6 +337,7 @@ describe("4. Image upload and upload failures", () => {
 
     const res = await request(app)
       .post("/addParticipants")
+      .set("Authorization", `Bearer ${studentToken}`)
       .field("name", "Malicious Project")
       .field("department", "IT")
       .attach("image", scriptBuffer, { filename: "exploit.js", contentType: "application/javascript" });
@@ -298,6 +349,7 @@ describe("4. Image upload and upload failures", () => {
   test("Assigns placeholder image when no image file or URL is provided", async () => {
     const res = await request(app)
       .post("/addParticipants")
+      .set("Authorization", `Bearer ${studentToken}`)
       .field("name", "No Photo Project")
       .field("department", "Electrical");
 

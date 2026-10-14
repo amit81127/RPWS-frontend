@@ -86,7 +86,7 @@ const Register = () => {
       });
     } catch (error) {
       console.error("❌ Error registering participant:", error);
-      alert("Something went wrong! Check console for details.");
+      alert(error.response?.data?.error || "Something went wrong! Check console for details.");
     }
   };
 

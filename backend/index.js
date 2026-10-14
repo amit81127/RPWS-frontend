@@ -206,8 +206,8 @@ app.post("/login", authLimiter, async (req, res) => {
 
 // ---------- PARTICIPANT ROUTES ----------
 
-// Add Participant (with rate limiting, disk upload protection & 2MB max limit)
-app.post("/addParticipants", uploadLimiter, handleUpload, async (req, res) => {
+// Add Participant (with rate limiting, JWT authentication, disk upload protection & 2MB max limit)
+app.post("/addParticipants", uploadLimiter, authMiddleware, handleUpload, async (req, res) => {
   try {
     const { name, department, projectName, email, description, teamNo } = req.body;
     if (!name || typeof name !== "string" || !name.trim()) {
