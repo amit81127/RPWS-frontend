@@ -72,7 +72,7 @@ const LazyImage = ({ src, alt }) => {
 
 // ---- Memoized Card ----
 const ParticipantCard = memo(({ participant, voted, onVote }) => (
-  <Grid item xs={12} sm={6} md={4}>
+  <Grid size={{ xs: 12, sm: 6, md: 4 }}>
     <Paper
       elevation={10}
       sx={{
@@ -434,7 +434,7 @@ const ParticipantsPage = () => {
       <Grid container spacing={4} justifyContent="center">
         {loading
           ? Array.from({ length: 6 }).map((_, i) => (
-              <Grid key={i} item xs={12} sm={6} md={4}>
+              <Grid key={i} size={{ xs: 12, sm: 6, md: 4 }}>
                 <Skeleton variant="rectangular" height={500} sx={{ borderRadius: 3 }} />
               </Grid>
             ))

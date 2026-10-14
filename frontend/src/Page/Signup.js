@@ -20,9 +20,13 @@ const Signup = () => {
       toast.error("Full name is required");
       return false;
     }
+    let email = formData.email.trim().toLowerCase();
+    if (!email.includes("@")) {
+      email = `${email}@axiscolleges.in`;
+    }
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!formData.email.trim() || !emailRegex.test(formData.email.trim())) {
-      toast.error("Please enter a valid email address");
+    if (!emailRegex.test(email)) {
+      toast.error("Please enter a valid college email format (e.g. 2023bcs108@axiscolleges.in)");
       return false;
     }
     if (formData.password.length < 6) {
@@ -36,11 +40,16 @@ const Signup = () => {
     e.preventDefault();
     if (!validateForm()) return;
 
+    let email = formData.email.trim().toLowerCase();
+    if (!email.includes("@")) {
+      email = `${email}@axiscolleges.in`;
+    }
+
     setLoading(true);
     try {
       const payload = {
         name: formData.name.trim(),
-        email: formData.email.trim().toLowerCase(),
+        email,
         password: formData.password,
       };
       const { data } = await axios.post(`${API_URL}/signup`, payload);
@@ -117,18 +126,21 @@ const Signup = () => {
 
           <div className="mb-3">
             <label className="form-label fw-semibold small text-secondary">
-              Email Address
+              College Email / Roll ID
             </label>
             <input
-              type="email"
+              type="text"
               name="email"
               value={formData.email}
-              placeholder="e.g. student@aitm.edu"
+              placeholder="e.g. 2023bcs108@axiscolleges.in"
               className="form-control form-control-lg fs-6"
               onChange={handleChange}
-              autoComplete="email"
+              autoComplete="username"
               required
             />
+            <small className="text-muted d-block mt-1" style={{ fontSize: "0.8rem" }}>
+              Format: <strong>2023bcs108@axiscolleges.in</strong> (or enter your Roll ID)
+            </small>
           </div>
 
           <div className="mb-4">

@@ -19,14 +19,20 @@ const Login = () => {
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!formData.email.trim() || !formData.password) {
-      toast.error("Please enter both email and password.");
+      toast.error("Please enter both username/email and password.");
       return;
+    }
+
+    let email = formData.email.trim().toLowerCase();
+    // Automatically append college domain if student enters roll number directly
+    if (!email.includes("@")) {
+      email = `${email}@axiscolleges.in`;
     }
 
     setLoading(true);
     try {
       const { data } = await axios.post(`${API_URL}/login`, {
-        email: formData.email.trim().toLowerCase(),
+        email,
         password: formData.password,
       });
 
@@ -100,18 +106,21 @@ const Login = () => {
         <form onSubmit={handleSubmit}>
           <div className="mb-3">
             <label className="form-label fw-semibold small text-secondary">
-              Email Address
+              College Email / Username
             </label>
             <input
-              type="email"
+              type="text"
               name="email"
               value={formData.email}
-              placeholder="e.g. student@aitm.edu"
+              placeholder="e.g. 2023bcs108@axiscolleges.in"
               className="form-control form-control-lg fs-6"
               onChange={handleChange}
-              autoComplete="email"
+              autoComplete="username"
               required
             />
+            <small className="text-muted d-block mt-1" style={{ fontSize: "0.8rem" }}>
+              Format: <strong>2023bcs108@axiscolleges.in</strong> (or enter your Roll ID)
+            </small>
           </div>
 
           <div className="mb-4">

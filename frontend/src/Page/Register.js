@@ -10,19 +10,10 @@ import {
   Paper,
   Box,
   Avatar,
-  Drawer,
-  List,
-  ListItem,
-  ListItemButton,
-  ListItemText,
-  Tooltip,
   CircularProgress,
   Alert,
 } from "@mui/material";
 import UploadFileIcon from "@mui/icons-material/UploadFile";
-import PersonAddIcon from "@mui/icons-material/PersonAdd";
-import HomeIcon from "@mui/icons-material/Home";
-import { Link } from "react-router-dom";
 import API_URL from "../api";
 const Register = () => {
   const [formData, setFormData] = useState({
@@ -77,7 +68,7 @@ const Register = () => {
         headers["Authorization"] = `Bearer ${token}`;
       }
 
-      const res = await axios.post(`${API_URL}/addParticipants`, data, { headers });
+      await axios.post(`${API_URL}/addParticipants`, data, { headers });
 
       // Invalidate SWR cache for participants feed so the new entry appears immediately
       mutate((key) => typeof key === "string" && key.includes("/allParticipants"));
@@ -128,7 +119,7 @@ const Register = () => {
           <form onSubmit={handleSubmit} encType="multipart/form-data">
             <Grid container spacing={3}>
               {/* Team Number */}
-              <Grid item xs={12}>
+              <Grid size={12}>
                 <TextField
                   name="teamNo"
                   label="Team Number"
@@ -140,7 +131,7 @@ const Register = () => {
                 />
               </Grid>
 
-              <Grid item xs={12}>
+              <Grid size={12}>
                 <TextField
                   name="name"
                   label="Team Name"
@@ -152,7 +143,7 @@ const Register = () => {
                 />
               </Grid>
 
-              <Grid item xs={12}>
+              <Grid size={12}>
                 <TextField
                   name="projectName"
                   label="Project Name"
@@ -164,7 +155,7 @@ const Register = () => {
                 />
               </Grid>
 
-              <Grid item xs={12}>
+              <Grid size={12}>
                 <TextField
                   name="department"
                   label="Department"
@@ -176,20 +167,22 @@ const Register = () => {
                 />
               </Grid>
 
-              <Grid item xs={12}>
+              <Grid size={12}>
                 <TextField
                   name="email"
-                  label="Email Address"
+                  label="College Email Address"
                   type="email"
                   variant="outlined"
                   fullWidth
                   required
+                  placeholder="e.g. 2023bcs108@axiscolleges.in"
+                  helperText="College email format: 2023bcs108@axiscolleges.in"
                   value={formData.email}
                   onChange={handleChange}
                 />
               </Grid>
 
-              <Grid item xs={12}>
+              <Grid size={12}>
                 <TextField
                   name="description"
                   label="Project Description / Participation Details"
@@ -203,7 +196,7 @@ const Register = () => {
                 />
               </Grid>
 
-              <Grid item xs={12}>
+              <Grid size={12}>
                 <Button
                   variant="outlined"
                   component="label"
@@ -239,7 +232,7 @@ const Register = () => {
                 )}
               </Grid>
 
-              <Grid item xs={12}>
+              <Grid size={12}>
                 <Button
                   type="submit"
                   variant="contained"

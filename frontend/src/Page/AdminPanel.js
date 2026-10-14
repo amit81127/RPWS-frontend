@@ -17,23 +17,14 @@ import {
   DialogContentText,
   DialogActions,
   Button,
-  Drawer,
-  List,
-  ListItem,
-  ListItemButton,
-  ListItemText,
-  Tooltip,
   Pagination,
   Alert,
   Paper,
   Stack,
 } from "@mui/material";
 import DeleteIcon from "@mui/icons-material/Delete";
-import PersonAddIcon from "@mui/icons-material/PersonAdd";
-import EmojiEventsIcon from "@mui/icons-material/EmojiEvents";
-import HomeIcon from "@mui/icons-material/Home";
 import GroupAddIcon from "@mui/icons-material/GroupAdd";
-import { Link } from "react-router-dom";
+import GroupsIcon from "@mui/icons-material/Groups";
 import { jwtDecode } from "jwt-decode";
 
 import { motion } from "framer-motion";
@@ -515,24 +506,91 @@ const AdminPanel = () => {
           </Paper>
         )}
 
-        {/* Search Box */}
-        <Box mb={4} textAlign="center">
-          <TextField
-            variant="outlined"
-            placeholder="Search participants..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
+        {/* Team Statistics & Search Overview */}
+        <Paper
+          elevation={2}
+          sx={{
+            p: 3,
+            mb: 4,
+            borderRadius: 3,
+            bgcolor: "#ffffffdd",
+            backdropFilter: "blur(8px)",
+            border: "1px solid rgba(0, 51, 102, 0.12)",
+          }}
+          aria-label="teams-overview-panel"
+        >
+          <Box
             sx={{
-              width: "100%",
-              maxWidth: 400,
-              "& .MuiOutlinedInput-root": {
-                borderRadius: 3,
-                bgcolor: "rgba(0,0,0,0.05)",
-                "&:hover": { bgcolor: "rgba(0,0,0,0.1)" },
-              },
+              display: "flex",
+              flexDirection: { xs: "column", md: "row" },
+              alignItems: { xs: "flex-start", md: "center" },
+              justifyContent: "space-between",
+              gap: 2,
             }}
-          />
-        </Box>
+          >
+            {/* Total Teams Metric Card */}
+            <Box sx={{ display: "flex", alignItems: "center", gap: 2 }}>
+              <Box
+                sx={{
+                  width: 56,
+                  height: 56,
+                  borderRadius: 2.5,
+                  bgcolor: "var(--primary-blue, #003366)",
+                  color: "#FFD700",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  boxShadow: "0 4px 12px rgba(0, 51, 102, 0.25)",
+                }}
+              >
+                <GroupsIcon sx={{ fontSize: 32 }} />
+              </Box>
+              <Box>
+                <Typography
+                  variant="caption"
+                  color="text.secondary"
+                  fontWeight={700}
+                  letterSpacing={0.8}
+                  textTransform="uppercase"
+                >
+                  Total Participating Teams
+                </Typography>
+                <Typography
+                  variant="h4"
+                  fontWeight={800}
+                  sx={{ color: "var(--primary-blue, #003366)", lineHeight: 1.1 }}
+                >
+                  {total}
+                  <Typography
+                    component="span"
+                    variant="subtitle1"
+                    color="text.secondary"
+                    sx={{ ml: 1, fontWeight: 500 }}
+                  >
+                    {total === 1 ? "team registered" : "teams registered"}
+                  </Typography>
+                </Typography>
+              </Box>
+            </Box>
+
+            {/* Search Box */}
+            <TextField
+              variant="outlined"
+              size="small"
+              placeholder="Search by team, project, or department..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              sx={{
+                width: { xs: "100%", md: 360 },
+                "& .MuiOutlinedInput-root": {
+                  borderRadius: 2.5,
+                  bgcolor: "rgba(0,0,0,0.03)",
+                  "&:hover": { bgcolor: "rgba(0,0,0,0.06)" },
+                },
+              }}
+            />
+          </Box>
+        </Paper>
 
         {/* Participants */}
         {loading ? (
@@ -559,7 +617,7 @@ const AdminPanel = () => {
             ) : (
               <Grid container spacing={2}>
                 {filteredParticipants.map((participant, index) => (
-                  <Grid item xs={12} sm={6} md={4} key={participant._id}>
+                  <Grid size={{ xs: 12, sm: 6, md: 4 }} key={participant._id}>
                     <motion.div
                       whileHover={{ scale: 1.05 }}
                       initial={{ opacity: 0, y: 20 }}
@@ -642,7 +700,7 @@ const AdminPanel = () => {
               <Box sx={{ display: "flex", flexDirection: "column", alignItems: "center", mt: 4, mb: 2 }}>
                 <Typography variant="body2" color="text.secondary" mb={1} aria-label="pagination-info">
                   Showing {participants.length ? (page - 1) * limit + 1 : 0} -{" "}
-                  {Math.min(page * limit, total)} of {total} projects (Page {page} of {totalPages})
+                  {Math.min(page * limit, total)} of {total} teams (Page {page} of {totalPages})
                 </Typography>
                 <Pagination
                   count={totalPages}

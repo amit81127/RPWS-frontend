@@ -13,7 +13,6 @@ import {
   CircularProgress,
   Alert,
 } from "@mui/material";
-import EmojiEventsIcon from "@mui/icons-material/EmojiEvents";
 import API_URL from "../api";
 
 // Stable fetcher defined outside component scope to prevent reference churn
