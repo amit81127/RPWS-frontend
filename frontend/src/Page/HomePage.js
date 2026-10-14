@@ -33,14 +33,11 @@ const HomePage = () => {
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.8 }}
               >
-                <div className="d-inline-block px-3 py-1 mb-3 rounded-pill border border-light bg-white bg-opacity-10 backdrop-blur">
-                  <span className="text-gold fw-bold small">OFFICIAL AITM PORTAL</span>
-                </div>
                 <h1 className="display-3 fw-bold mb-4 lh-sm">
                   Excellence in <span className="text-gold">Evaluation</span> & <span className="text-gold">Recognition</span>
                 </h1>
                 <p className="lead mb-5 opacity-90" style={{ maxWidth: "600px" }}>
-                  The centralized platform for managing events, rating projects, and celebrating student achievements at Angadi Institute of Technology and Management.
+                  The centralized platform for managing events, rating projects, and celebrating student achievements at Axis Institute of Technology and Management in collaboration with Sanganak Shila.
                 </p>
                 <div className="d-flex gap-3 flex-wrap">
                   <Link
@@ -102,9 +99,9 @@ const HomePage = () => {
           <div className="row align-items-center g-5">
             <div className="col-lg-6">
               <div className="position-relative">
-                <img 
-                  src="https://images.unsplash.com/photo-1523050854058-8df90110c9f1?ixlib=rb-4.0.3&auto=format&fit=crop&w=800&q=80" 
-                  alt="Students" 
+                <img
+                  src="https://images.unsplash.com/photo-1523050854058-8df90110c9f1?ixlib=rb-4.0.3&auto=format&fit=crop&w=800&q=80"
+                  alt="Students"
                   className="img-fluid rounded-4 shadow-lg"
                 />
                 <div className="position-absolute bottom-0 end-0 bg-white p-4 rounded-4 shadow-lg m-4 d-none d-md-block" style={{ maxWidth: "200px" }}>
@@ -163,8 +160,8 @@ const HomePage = () => {
             <Link to="/contact" className="btn btn-light btn-lg px-5 fw-bold text-primary shadow-lg">
               Contact Admin
             </Link>
-            <Link to="/winners" className="btn btn-outline-light btn-lg px-5 fw-bold">
-              View Winners
+            <Link to="/participants" className="btn btn-outline-light btn-lg px-5 fw-bold">
+              View Participants
             </Link>
           </div>
         </div>

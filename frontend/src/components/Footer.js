@@ -10,15 +10,32 @@ const Footer = () => {
           {/* Brand Section */}
           <div className="col-lg-4 col-md-6">
             <div className="d-flex align-items-center gap-2 mb-3">
-              <img 
-                src="axislogo-removebg-preview.png" 
-                alt="AITM Logo" 
-                style={{ width: "40px", height: "40px", background: "white", borderRadius: "50%", padding: "2px" }} 
-              />
-              <h5 className="fw-bold mb-0 text-white">AITM Rating System</h5>
+              <div
+                className="d-inline-flex align-items-center gap-2 py-1 px-2 rounded-3"
+                style={{
+                  background: "rgba(255, 255, 255, 0.08)",
+                  border: "1px solid rgba(255, 255, 255, 0.18)",
+                }}
+              >
+                <img 
+                  src="/aitm-logo-cropped.png" 
+                  alt="AITM Logo" 
+                  style={{ height: "28px", width: "auto", objectFit: "contain" }} 
+                />
+                <span style={{ color: "var(--accent-gold, #ffc107)", fontWeight: "bold", fontSize: "0.95rem" }}>✕</span>
+                <div style={{ background: "rgba(255, 255, 255, 0.95)", borderRadius: "6px", padding: "2px 5px", display: "flex", alignItems: "center" }}>
+                  <img 
+                    src="/sanganakshila-logo-cropped.png" 
+                    alt="Sanganak Shila Logo" 
+                    style={{ height: "24px", width: "auto", objectFit: "contain" }} 
+                  />
+                </div>
+              </div>
             </div>
+            <h5 className="fw-bold mb-1 text-white">AITM ✕ Sanganak Shila</h5>
+            <p className="text-gold small mb-2 fw-semibold">ExpoVote Rating & Project Review Platform</p>
             <p className="text-white-50 small">
-              The official platform for rating and reviewing projects, events, and participants at Angadi Institute of Technology and Management. Fostering excellence through transparent evaluation.
+              The official platform for evaluating, rating, and celebrating innovative projects, technical events, and exhibitions at Axis Institute of Technology and Management in collaboration with Sanganak Shila.
             </p>
             <div className="d-flex gap-3 mt-3">
               <a href="https://facebook.com" target="_blank" rel="noopener noreferrer" aria-label="Facebook" className="text-white social-icon-hover"><FaFacebookF /></a>
@@ -43,7 +60,7 @@ const Footer = () => {
           <div className="col-lg-2 col-md-6">
             <h6 className="fw-bold text-gold mb-3">Resources</h6>
             <ul className="list-unstyled">
-              <li className="mb-2"><Link className="text-white-50 text-decoration-none hover-white" to="/login">Admin Login</Link></li>
+              <li className="mb-2"><Link className="text-white-50 text-decoration-none hover-white" to="/admin/login">Admin Login</Link></li>
               <li className="mb-2"><Link className="text-white-50 text-decoration-none hover-white" to="/register">Student Registration</Link></li>
               <li className="mb-2"><span className="text-white-50">Privacy Policy</span></li>
               <li className="mb-2"><span className="text-white-50">Terms of Service</span></li>

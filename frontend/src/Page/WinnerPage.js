@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useCallback, useMemo } from "react";
 import axios from "axios";
 import useSWRInfinite from "swr/infinite";
 import {
@@ -10,41 +10,38 @@ import {
   Button,
   LinearProgress,
   Tooltip,
-  Drawer,
-  List,
-  ListItem,
-  ListItemButton,
-  ListItemText,
   CircularProgress,
   Alert,
 } from "@mui/material";
-import PersonAddIcon from "@mui/icons-material/PersonAdd";
 import EmojiEventsIcon from "@mui/icons-material/EmojiEvents";
-import AppRegistrationIcon from "@mui/icons-material/AppRegistration";
-import HomeIcon from "@mui/icons-material/Home";
-import { Link } from "react-router-dom";
 import API_URL from "../api";
-const sidebarCollapsedWidth = 50;
-const sidebarExpandedWidth = 150;
+
+// Stable fetcher defined outside component scope to prevent reference churn
+const fetcher = (url) => axios.get(url).then((res) => res.data);
 
 const WinnersPage = () => {
-  const [sidebarOpen, setSidebarOpen] = useState(false);
-  const fetcher = (url) => axios.get(url).then((res) => res.data);
-
-  const getKey = (pageIndex, previousPageData) => {
-    if (previousPageData && !previousPageData.data.length) return null;
+  const getKey = useCallback((pageIndex, previousPageData) => {
+    if (previousPageData) {
+      if (previousPageData.meta && previousPageData.meta.hasMore === false) return null;
+      if (Array.isArray(previousPageData.data) && previousPageData.data.length === 0) return null;
+      if (Array.isArray(previousPageData) && previousPageData.length === 0) return null;
+    }
     return `${API_URL}/allParticipantsByVotes?page=${pageIndex + 1}&limit=6`;
-  };
+  }, []);
 
   const { data, error, size, setSize, isLoading } = useSWRInfinite(getKey, fetcher, {
     revalidateFirstPage: false,
     revalidateOnFocus: false,
+    dedupingInterval: 4000,
   });
 
-  const winnersData = data ? data.flatMap((page) => {
-    if (Array.isArray(page)) return page;
-    return page.data || [];
-  }) : [];
+  const winnersData = useMemo(() => {
+    if (!data) return [];
+    return data.flatMap((page) => {
+      if (Array.isArray(page)) return page;
+      return page.data || [];
+    });
+  }, [data]);
 
   const maxVotes = winnersData[0]?.votes || 0;
 
@@ -52,75 +49,8 @@ const WinnersPage = () => {
   const isEmpty = data?.[0]?.data?.length === 0;
   const isReachingEnd = isEmpty || (data && data[data.length - 1]?.data?.length < 6);
 
-  const sidebarItems = [
-    { text: "Register", icon: <PersonAddIcon />, link: "/register" },
-    { text: "Winners", icon: <EmojiEventsIcon />, link: "/winners" },
-    { text: "Signup", icon: <AppRegistrationIcon />, link: "/signup" },
-  ];
-
   return (
-    <Box sx={{ display: "flex" }}>
-      {/* Sidebar */}
-      <Drawer
-        variant="permanent"
-        onMouseEnter={() => setSidebarOpen(true)}
-        onMouseLeave={() => setSidebarOpen(false)}
-        sx={{
-          width: sidebarOpen ? sidebarExpandedWidth : sidebarCollapsedWidth,
-          flexShrink: 0,
-          [`& .MuiDrawer-paper`]: {
-            width: sidebarOpen ? sidebarExpandedWidth : sidebarCollapsedWidth,
-            bgcolor: "rgba(255,255,255,0.1)",
-            color: "#000",
-            backdropFilter: "blur(10px)",
-            overflowX: "hidden",
-            borderRight: "1px solid rgba(0,0,0,0.1)",
-            transition: "width 0.3s",
-          },
-        }}
-      >
-        <Box sx={{ display: "flex", flexDirection: "column", alignItems: "center", py: 3, mb: 2 }}>
-          <HomeIcon fontSize="large" />
-          {sidebarOpen && (
-            <Typography variant="h6" mt={1} fontWeight="bold">
-              Admin Panel
-            </Typography>
-          )}
-        </Box>
-        <List>
-          {sidebarItems.map((item) => (
-            <ListItem key={item.text} disablePadding sx={{ mb: 1 }}>
-              <ListItemButton
-                component={Link}
-                to={item.link}
-                sx={{
-                  borderRadius: 2,
-                  mx: 1,
-                  transition: "0.3s",
-                  color: "#000",
-                  "&:hover": {
-                    bgcolor: "rgba(0,0,0,0.05)",
-                    transform: "scale(1.05)",
-                    color: "#1976d2",
-                  },
-                }}
-              >
-                {item.icon}
-                {sidebarOpen && <ListItemText primary={item.text} sx={{ ml: 2 }} />}
-              </ListItemButton>
-            </ListItem>
-          ))}
-        </List>
-      </Drawer>
-
-      {/* Main Content */}
-      <Container
-        sx={{
-          py: 4,
-          ml: sidebarCollapsedWidth,
-          width: `calc(100% - ${sidebarCollapsedWidth}px)`,
-        }}
-      >
+    <Container maxWidth="lg" sx={{ py: 4 }}>
         <Typography
           variant="h4"
           align="center"
@@ -215,7 +145,6 @@ const WinnersPage = () => {
           </Box>
         )}
       </Container>
-    </Box>
   );
 };
 

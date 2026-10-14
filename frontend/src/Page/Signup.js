@@ -4,44 +4,29 @@ import axios from "axios";
 import { ToastContainer, toast } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
 import { AuthContext } from "../components/AuthContext";
-import {
-  Drawer,
-  List,
-  ListItem,
-  ListItemButton,
-  ListItemText,
-  Typography,
-  Box,
-} from "@mui/material";
-import PersonAddIcon from "@mui/icons-material/PersonAdd";
-import EmojiEventsIcon from "@mui/icons-material/EmojiEvents";
-import AppRegistrationIcon from "@mui/icons-material/AppRegistration";
-import HomeIcon from "@mui/icons-material/Home";
 import API_URL from "../api";
-const sidebarCollapsedWidth = 50;
-const sidebarExpandedWidth = 150;
 
 const Signup = () => {
   const navigate = useNavigate();
   const { login } = useContext(AuthContext);
   const [formData, setFormData] = useState({ name: "", email: "", password: "" });
   const [loading, setLoading] = useState(false);
-  const [sidebarOpen, setSidebarOpen] = useState(false);
 
-  const handleChange = (e) => setFormData({ ...formData, [e.target.name]: e.target.value });
+  const handleChange = (e) =>
+    setFormData({ ...formData, [e.target.name]: e.target.value });
 
   const validateForm = () => {
     if (!formData.name.trim()) {
-      toast.error("Name is required");
+      toast.error("Full name is required");
       return false;
     }
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!formData.email.trim() || !emailRegex.test(formData.email.trim())) {
-      toast.error("Invalid email address");
+      toast.error("Please enter a valid email address");
       return false;
     }
     if (formData.password.length < 6) {
-      toast.error("Password must be at least 6 characters");
+      toast.error("Password must be at least 6 characters long");
       return false;
     }
     return true;
@@ -60,134 +45,154 @@ const Signup = () => {
       };
       const { data } = await axios.post(`${API_URL}/signup`, payload);
       login(data.token);
-      toast.success("Signup successful!");
-      setTimeout(() => navigate("/"), 1000);
+      toast.success("Account created successfully! Welcome to ExpoVote.");
+      setTimeout(() => navigate("/participants"), 1000);
     } catch (err) {
-      toast.error(err.response?.data?.error || "Network error");
+      const errorMsg =
+        err.response?.data?.error ||
+        err.response?.data?.message ||
+        "Registration failed. Please try again.";
+      toast.error(errorMsg);
     } finally {
       setLoading(false);
     }
   };
 
-  const sidebarItems = [
-    { text: "Register", icon: <PersonAddIcon />, link: "/register" },
-    { text: "Winners", icon: <EmojiEventsIcon />, link: "/winners" },
-    { text: "Signup", icon: <AppRegistrationIcon />, link: "/signup" },
-  ];
-
   return (
-    <Box sx={{ display: "flex" }}>
-      {/* Sidebar */}
-      <Drawer
-        variant="permanent"
-        onMouseEnter={() => setSidebarOpen(true)}
-        onMouseLeave={() => setSidebarOpen(false)}
-        sx={{
-          width: sidebarOpen ? sidebarExpandedWidth : sidebarCollapsedWidth,
-          flexShrink: 0,
-          [`& .MuiDrawer-paper`]: {
-            width: sidebarOpen ? sidebarExpandedWidth : sidebarCollapsedWidth,
-            bgcolor: "rgba(255,255,255,0.1)",
-            color: "#000",
-            backdropFilter: "blur(10px)",
-            overflowX: "hidden",
-            borderRight: "1px solid rgba(0,0,0,0.1)",
-            transition: "width 0.3s",
-          },
+    <div
+      className="d-flex align-items-center justify-content-center py-5"
+      style={{
+        minHeight: "85vh",
+        background: "linear-gradient(135deg, rgba(0, 51, 102, 0.05) 0%, rgba(255, 215, 0, 0.05) 100%)",
+      }}
+    >
+      <div
+        className="card shadow-lg p-4 p-md-5"
+        style={{
+          width: "100%",
+          maxWidth: "440px",
+          borderRadius: "16px",
+          border: "1px solid rgba(0, 51, 102, 0.1)",
         }}
       >
-        <Box sx={{ display: "flex", flexDirection: "column", alignItems: "center", py: 3, mb: 2 }}>
-          <HomeIcon fontSize="large" />
-          {sidebarOpen && (
-            <Typography variant="h6" mt={1} fontWeight="bold">
-              Admin Panel
-            </Typography>
-          )}
-        </Box>
-        <List>
-          {sidebarItems.map((item) => (
-            <ListItem key={item.text} disablePadding sx={{ mb: 1 }}>
-              <ListItemButton
-                component={Link}
-                to={item.link}
-                sx={{
-                  borderRadius: 2,
-                  mx: 1,
-                  transition: "0.3s",
-                  color: "#000",
-                  "&:hover": {
-                    bgcolor: "rgba(0,0,0,0.05)",
-                    transform: "scale(1.05)",
-                    color: "#1976d2",
-                  },
-                }}
-              >
-                {item.icon}
-                {sidebarOpen && <ListItemText primary={item.text} sx={{ ml: 2 }} />}
-              </ListItemButton>
-            </ListItem>
-          ))}
-        </List>
-      </Drawer>
-
-      {/* Main Content */}
-      <Box
-        sx={{
-          ml: sidebarCollapsedWidth,
-          width: `calc(100% - ${sidebarCollapsedWidth}px)`,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          height: "100vh",
-        }}
-      >
-        <div className="signup-card shadow p-4" style={{ width: 400 }}>
-          <h2 className="text-center mb-4">Create Account</h2>
-          <form onSubmit={handleSubmit}>
-            <div className="mb-3">
-              <input
-                type="text"
-                name="name"
-                value={formData.name}
-                placeholder="Full Name"
-                className="form-control form-control-lg"
-                onChange={handleChange}
-                required
-              />
-            </div>
-            <div className="mb-3">
-              <input
-                type="email"
-                name="email"
-                value={formData.email}
-                placeholder="Email"
-                className="form-control form-control-lg"
-                onChange={handleChange}
-                required
-              />
-            </div>
-            <div className="mb-3">
-              <input
-                type="password"
-                name="password"
-                value={formData.password}
-                placeholder="Password"
-                className="form-control form-control-lg"
-                onChange={handleChange}
-                required
-              />
-            </div>
-            <button type="submit" className="btn btn-primary w-100 btn-lg" disabled={loading}>
-              {loading ? "Signing up..." : "Signup"}
-            </button>
-          </form>
-          <p className="text-center mt-3">
-            Already have an account? <Link to="/login">Login</Link>
+        <div className="text-center mb-4">
+          <div
+            className="d-inline-flex align-items-center justify-content-center mb-3"
+            style={{
+              width: "60px",
+              height: "60px",
+              borderRadius: "50%",
+              backgroundColor: "var(--accent-gold, #FFD700)",
+              color: "var(--primary-blue, #003366)",
+              fontSize: "28px",
+              boxShadow: "0 4px 10px rgba(255, 215, 0, 0.3)",
+            }}
+          >
+            ✨
+          </div>
+          <h2 className="fw-bold mb-1" style={{ color: "var(--primary-blue, #003366)" }}>
+            Student Sign Up
+          </h2>
+          <p className="text-muted small mb-0">
+            Create an account to participate and vote in the exhibition
           </p>
         </div>
-        <ToastContainer position="bottom-left" />
-      </Box>
-    </Box>
+
+        <form onSubmit={handleSubmit}>
+          <div className="mb-3">
+            <label className="form-label fw-semibold small text-secondary">
+              Full Name
+            </label>
+            <input
+              type="text"
+              name="name"
+              value={formData.name}
+              placeholder="e.g. Alex Johnson"
+              className="form-control form-control-lg fs-6"
+              onChange={handleChange}
+              autoComplete="name"
+              required
+            />
+          </div>
+
+          <div className="mb-3">
+            <label className="form-label fw-semibold small text-secondary">
+              Email Address
+            </label>
+            <input
+              type="email"
+              name="email"
+              value={formData.email}
+              placeholder="e.g. student@aitm.edu"
+              className="form-control form-control-lg fs-6"
+              onChange={handleChange}
+              autoComplete="email"
+              required
+            />
+          </div>
+
+          <div className="mb-4">
+            <label className="form-label fw-semibold small text-secondary">
+              Password
+            </label>
+            <input
+              type="password"
+              name="password"
+              value={formData.password}
+              placeholder="At least 6 characters"
+              className="form-control form-control-lg fs-6"
+              onChange={handleChange}
+              autoComplete="new-password"
+              required
+            />
+            <small className="form-text text-muted">
+              Must be at least 6 characters long
+            </small>
+          </div>
+
+          <button
+            type="submit"
+            className="btn btn-gold-custom w-100 py-2 fs-6 shadow-sm"
+            style={{
+              borderRadius: "8px",
+            }}
+            disabled={loading}
+          >
+            {loading ? (
+              <span className="d-flex align-items-center justify-content-center gap-2">
+                <span className="spinner-border spinner-border-sm" role="status" aria-hidden="true" />
+                Creating account...
+              </span>
+            ) : (
+              "Create Account"
+            )}
+          </button>
+        </form>
+
+        <div className="text-center mt-4 pt-2 border-top">
+          <p className="mb-0 text-muted small">
+            Already have an account?{" "}
+            <Link
+              to="/login"
+              className="fw-bold"
+              style={{ color: "var(--primary-blue, #003366)", textDecoration: "none" }}
+            >
+              Sign In
+            </Link>
+          </p>
+          <div className="mt-2">
+            <Link
+              to="/admin/signup"
+              className="text-secondary small text-decoration-none"
+              style={{ fontSize: "0.82rem" }}
+            >
+              🛡️ Event Organizer or Faculty? Sign Up as Admin &rarr;
+            </Link>
+          </div>
+        </div>
+      </div>
+      <ToastContainer position="bottom-right" autoClose={3000} />
+    </div>
   );
 };
 

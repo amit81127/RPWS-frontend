@@ -41,31 +41,66 @@ const Navbar = () => {
       <div className="container">
         {/* Brand Section */}
         <Link
-          className="navbar-brand d-flex align-items-center gap-3"
+          className="navbar-brand d-flex align-items-center gap-2"
           to="/"
           style={{ textDecoration: "none" }}
         >
-          <img
-            src="axislogo-removebg-preview.png"
-            alt="AITM Logo"
-            className="aitm-logo"
+          <div
+            className="d-flex align-items-center gap-2 py-1 px-2 rounded-3"
             style={{
-              width: "50px",
-              height: "50px",
-              borderRadius: "50%",
-              objectFit: "contain",
-              background: "white",
-              padding: "2px",
-              border: "2px solid var(--accent-gold)",
+              background: "rgba(255, 255, 255, 0.08)",
+              border: "1px solid rgba(255, 255, 255, 0.18)",
+              backdropFilter: "blur(6px)",
             }}
-          />
-          <div className="d-flex flex-column">
-            <span className="fw-bold fs-5 text-white" style={{ letterSpacing: "1px" }}>
-              AITM
+          >
+            {/* AITM Logo */}
+            <img
+              src="/aitm-logo-cropped.png"
+              alt="AITM Logo"
+              className="aitm-logo"
+              style={{
+                height: "36px",
+                width: "auto",
+                objectFit: "contain",
+                filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.5))",
+              }}
+            />
+
+            {/* Collaborative Multiplier 'X' */}
+            <span
+              className="fw-bold"
+              style={{
+                color: "var(--accent-gold, #ffc107)",
+                fontSize: "1.05rem",
+                lineHeight: 1,
+                padding: "0 2px",
+                textShadow: "0 0 8px rgba(255, 193, 7, 0.4)",
+              }}
+            >
+              ✕
             </span>
-            <span className="fs-6 text-gold" style={{ fontSize: "0.8rem", fontWeight: "500" }}>
-              Rating System
-            </span>
+
+            {/* Sanganak Shila Logo with white backdrop pill */}
+            <div
+              style={{
+                background: "rgba(255, 255, 255, 0.95)",
+                borderRadius: "8px",
+                padding: "2px 6px",
+                display: "flex",
+                alignItems: "center",
+                boxShadow: "0 1px 4px rgba(0,0,0,0.2)",
+              }}
+            >
+              <img
+                src="/sanganakshila-logo-cropped.png"
+                alt="Sanganak Shila Logo"
+                style={{
+                  height: "32px",
+                  width: "auto",
+                  objectFit: "contain",
+                }}
+              />
+            </div>
           </div>
         </Link>
 
@@ -104,11 +139,26 @@ const Navbar = () => {
               </Link>
             </li>
 
-            <li className="nav-item">
-              <Link className="nav-link" to="/winners">
-                Winners
-              </Link>
-            </li>
+            {/* Admin-only Navigation: Registration, Winners, and Sign Up Admin */}
+            {token && userRole === "admin" && (
+              <>
+                <li className="nav-item">
+                  <Link className="nav-link" to="/register">
+                    Registration
+                  </Link>
+                </li>
+                <li className="nav-item">
+                  <Link className="nav-link" to="/winners">
+                    Winners
+                  </Link>
+                </li>
+                <li className="nav-item">
+                  <Link className="nav-link" to="/admin/signup">
+                    Sign Up Admin
+                  </Link>
+                </li>
+              </>
+            )}
 
             <li className="nav-item">
               <Link className="nav-link" to="/contact">
@@ -156,19 +206,55 @@ const Navbar = () => {
                       borderRadius: "8px",
                       position: "absolute",
                       right: 0,
-                      minWidth: "150px",
+                      minWidth: "175px",
                     }}
                   >
                     <li>
                       <button
                         type="button"
-                        className="dropdown-item"
+                        className="dropdown-item fw-semibold"
                         onClick={() => {
                           navigate("/admin");
                           setDropdownOpen(false);
                         }}
                       >
-                        Admin Panel
+                        🛡️ Admin Panel
+                      </button>
+                    </li>
+                    <li>
+                      <button
+                        type="button"
+                        className="dropdown-item"
+                        onClick={() => {
+                          navigate("/register");
+                          setDropdownOpen(false);
+                        }}
+                      >
+                        ➕ Registration
+                      </button>
+                    </li>
+                    <li>
+                      <button
+                        type="button"
+                        className="dropdown-item"
+                        onClick={() => {
+                          navigate("/admin/signup");
+                          setDropdownOpen(false);
+                        }}
+                      >
+                        👤 Sign Up Admin
+                      </button>
+                    </li>
+                    <li>
+                      <button
+                        type="button"
+                        className="dropdown-item"
+                        onClick={() => {
+                          navigate("/winners");
+                          setDropdownOpen(false);
+                        }}
+                      >
+                        🏆 Winners
                       </button>
                     </li>
                     <li>

@@ -1,5 +1,6 @@
-import React, { useEffect, useState, useRef, useCallback } from "react";
+import React, { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import axios from "axios";
+import { mutate } from "swr";
 import {
   Container,
   Typography,
@@ -30,24 +31,29 @@ import {
 import DeleteIcon from "@mui/icons-material/Delete";
 import PersonAddIcon from "@mui/icons-material/PersonAdd";
 import EmojiEventsIcon from "@mui/icons-material/EmojiEvents";
-import AppRegistrationIcon from "@mui/icons-material/AppRegistration";
 import HomeIcon from "@mui/icons-material/Home";
+import GroupAddIcon from "@mui/icons-material/GroupAdd";
 import { Link } from "react-router-dom";
 import { jwtDecode } from "jwt-decode";
 
 import { motion } from "framer-motion";
 import API_URL from "../api";
 
-const sidebarCollapsedWidth = 60;
-const sidebarExpandedWidth = 180;
-
 const AdminPanel = () => {
   const [participants, setParticipants] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [deleteDialog, setDeleteDialog] = useState({ open: false, id: null });
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  // Debounce search input to avoid recalculating on every single keystroke
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setDebouncedSearch(search);
+    }, 250);
+    return () => clearTimeout(handler);
+  }, [search]);
 
   // Determine administrator role from current token
   const token = localStorage.getItem("token");
@@ -98,11 +104,85 @@ const AdminPanel = () => {
     }
   }, [isAdmin]);
 
+  // Administrator management state
+  const [admins, setAdmins] = useState([]);
+  const [adminsLoading, setAdminsLoading] = useState(false);
+  const [adminDialogOpen, setAdminDialogOpen] = useState(false);
+  const [newAdmin, setNewAdmin] = useState({ name: "", email: "", password: "" });
+  const [newAdminLoading, setNewAdminLoading] = useState(false);
+  const [adminActionMessage, setAdminActionMessage] = useState(null);
+
+  // Fetch administrator list (Admin only)
+  const fetchAdmins = useCallback(async () => {
+    if (!isAdmin) return;
+    setAdminsLoading(true);
+    try {
+      const currentToken = localStorage.getItem("token");
+      const { data } = await axios.get(`${API_URL}/admin/listAdmins`, {
+        headers: currentToken ? { Authorization: `Bearer ${currentToken}` } : {},
+      });
+      setAdmins(data.data || []);
+    } catch (err) {
+      console.error("Error fetching administrators:", err);
+    } finally {
+      setAdminsLoading(false);
+    }
+  }, [isAdmin]);
+
   useEffect(() => {
     if (isAdmin) {
       fetchVotingStatus();
+      fetchAdmins();
     }
-  }, [isAdmin, fetchVotingStatus]);
+  }, [isAdmin, fetchVotingStatus, fetchAdmins]);
+
+  // Handle registering a new administrator
+  const handleRegisterAdmin = async (e) => {
+    e.preventDefault();
+    setAdminActionMessage(null);
+
+    if (!newAdmin.name.trim() || !newAdmin.email.trim() || !newAdmin.password) {
+      setAdminActionMessage({ type: "error", text: "All fields are required." });
+      return;
+    }
+
+    if (newAdmin.password.length < 6) {
+      setAdminActionMessage({ type: "error", text: "Password must be at least 6 characters." });
+      return;
+    }
+
+    setNewAdminLoading(true);
+    try {
+      const currentToken = localStorage.getItem("token");
+      const { data } = await axios.post(
+        `${API_URL}/admin/registerAdmin`,
+        {
+          name: newAdmin.name.trim(),
+          email: newAdmin.email.trim().toLowerCase(),
+          password: newAdmin.password,
+        },
+        {
+          headers: currentToken ? { Authorization: `Bearer ${currentToken}` } : {},
+        }
+      );
+
+      setAdminActionMessage({ type: "success", text: data.message || "Administrator registered successfully!" });
+      setNewAdmin({ name: "", email: "", password: "" });
+      await fetchAdmins();
+
+      setTimeout(() => {
+        setAdminDialogOpen(false);
+        setAdminActionMessage(null);
+      }, 1500);
+    } catch (err) {
+      setAdminActionMessage({
+        type: "error",
+        text: err.response?.data?.error || "Failed to register administrator.",
+      });
+    } finally {
+      setNewAdminLoading(false);
+    }
+  };
 
   // Execute start or stop voting action after confirmation
   const handleVotingAction = async (action) => {
@@ -221,112 +301,35 @@ const AdminPanel = () => {
         setTotalPages(Math.max(1, Math.ceil(nextTotal / limit)));
         return nextTotal;
       });
-      setDeleteDialog({ open: false, id: null });
+        setDeleteDialog({ open: false, id: null });
 
-      if (remaining.length === 0 && page > 1) {
-        setPage((prevPage) => prevPage - 1);
+        // Invalidate global SWR caches so participant list and winners update immediately
+        mutate((key) => typeof key === "string" && (key.includes("/allParticipants") || key.includes("/allParticipantsByVotes")));
+
+        if (remaining.length === 0 && page > 1) {
+          setPage((prevPage) => prevPage - 1);
+        }
+      } catch (err) {
+        console.error("Error deleting participant:", err);
+        alert(err.response?.data?.error || "Failed to delete participant.");
       }
-    } catch (err) {
-      console.error("Error deleting participant:", err);
-      alert(err.response?.data?.error || "Failed to delete participant.");
-    }
-  };
+    };
 
-  // Filter participants (null-safe handling for department, projectName, name, teamNo)
-  const filteredParticipants = participants.filter((p) => {
-    const s = search.toLowerCase();
-    const nameMatch = p.name ? p.name.toLowerCase().includes(s) : false;
-    const deptMatch = p.department ? p.department.toLowerCase().includes(s) : false;
-    const projectMatch = p.projectName ? p.projectName.toLowerCase().includes(s) : false;
-    const teamMatch = p.teamNo ? p.teamNo.toString().includes(s) : false;
-    return nameMatch || deptMatch || projectMatch || teamMatch;
-  });
-
-  const sidebarItems = [
-    { text: "Register", icon: <PersonAddIcon />, link: "/register" },
-    { text: "Winners", icon: <EmojiEventsIcon />, link: "/winners" },
-    { text: "Signup", icon: <AppRegistrationIcon />, link: "/signup" },
-  ];
+    // Memoized filter calculation using debounced search
+    const filteredParticipants = useMemo(() => {
+      if (!debouncedSearch.trim()) return participants;
+      const s = debouncedSearch.trim().toLowerCase();
+      return participants.filter((p) => {
+        const nameMatch = p.name ? p.name.toLowerCase().includes(s) : false;
+        const deptMatch = p.department ? p.department.toLowerCase().includes(s) : false;
+        const projectMatch = p.projectName ? p.projectName.toLowerCase().includes(s) : false;
+        const teamMatch = p.teamNo ? p.teamNo.toString().includes(s) : false;
+        return nameMatch || deptMatch || projectMatch || teamMatch;
+      });
+    }, [participants, debouncedSearch]);
 
   return (
-    <Box sx={{ display: "flex" }}>
-      {/* Sidebar */}
-      <Drawer
-        variant="permanent"
-        onMouseEnter={() => setSidebarOpen(true)}
-        onMouseLeave={() => setSidebarOpen(false)}
-        sx={{
-          width: sidebarOpen ? sidebarExpandedWidth : sidebarCollapsedWidth,
-          flexShrink: 0,
-          transition: "width 0.3s",
-          [`& .MuiDrawer-paper`]: {
-            width: sidebarOpen ? sidebarExpandedWidth : sidebarCollapsedWidth,
-            transition: "width 0.3s",
-            bgcolor: "#ffffffdd",
-            color: "#000",
-            backdropFilter: "blur(10px)",
-            overflowX: "hidden",
-            borderRight: "1px solid rgba(0,0,0,0.1)",
-          },
-        }}
-      >
-        <Box
-          sx={{
-            display: "flex",
-            flexDirection: "column",
-            alignItems: "center",
-            py: 3,
-            mb: 2,
-          }}
-        >
-          <HomeIcon fontSize="large" />
-          {sidebarOpen && (
-            <Typography variant="h6" mt={1} fontWeight="bold">
-              Admin Panel
-            </Typography>
-          )}
-        </Box>
-        <List>
-          {sidebarItems.map((item) => (
-            <Tooltip
-              key={item.text}
-              title={!sidebarOpen ? item.text : ""}
-              placement="right"
-            >
-              <ListItem disablePadding sx={{ mb: 1 }}>
-                <ListItemButton
-                  component={Link}
-                  to={item.link}
-                  sx={{
-                    borderRadius: 2,
-                    mx: 1,
-                    transition: "0.3s",
-                    color: "#000",
-                    "&:hover": {
-                      bgcolor: "rgba(0,0,0,0.05)",
-                      transform: "scale(1.05)",
-                      color: "#1976d2",
-                    },
-                  }}
-                >
-                  {item.icon}
-                  {sidebarOpen && <ListItemText primary={item.text} sx={{ ml: 2 }} />}
-                </ListItemButton>
-              </ListItem>
-            </Tooltip>
-          ))}
-        </List>
-      </Drawer>
-
-      {/* Main Content */}
-      <Container
-        sx={{
-          py: 4,
-          ml: sidebarOpen ? sidebarExpandedWidth : sidebarCollapsedWidth,
-          width: `calc(100% - ${sidebarOpen ? sidebarExpandedWidth : sidebarCollapsedWidth}px)`,
-          transition: "margin-left 0.3s, width 0.3s",
-        }}
-      >
+    <Container maxWidth="lg" sx={{ py: 4 }}>
         {/* Admin Voting Window Controls (Only visible to authenticated administrators) */}
         {isAdmin && (
           <Paper
@@ -421,6 +424,93 @@ const AdminPanel = () => {
               >
                 {votingMessage.text}
               </Alert>
+            )}
+          </Paper>
+        )}
+
+        {/* Administrator Management Panel (Admin only can sign up other admins) */}
+        {isAdmin && (
+          <Paper
+            elevation={3}
+            sx={{
+              p: 3,
+              mb: 4,
+              borderRadius: 3,
+              bgcolor: "#ffffffdd",
+              backdropFilter: "blur(8px)",
+              border: "1px solid rgba(0,0,0,0.08)",
+            }}
+            aria-label="admin-management-panel"
+          >
+            <Box
+              sx={{
+                display: "flex",
+                flexDirection: { xs: "column", sm: "row" },
+                alignItems: { xs: "flex-start", sm: "center" },
+                justifyContent: "space-between",
+                gap: 2,
+                mb: 2,
+              }}
+            >
+              <Box>
+                <Typography variant="h6" fontWeight="bold">
+                  Administrator Management
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  Public admin registration is restricted. Only authorized administrators can register additional admin accounts.
+                </Typography>
+              </Box>
+
+              <Button
+                variant="contained"
+                startIcon={<GroupAddIcon />}
+                onClick={() => {
+                  setAdminActionMessage(null);
+                  setAdminDialogOpen(true);
+                }}
+                sx={{
+                  bgcolor: "#003366",
+                  color: "#FFD700",
+                  textTransform: "none",
+                  fontWeight: "bold",
+                  borderRadius: 2,
+                  px: 2.5,
+                  "&:hover": { bgcolor: "#002244" },
+                }}
+              >
+                + Register New Admin
+              </Button>
+            </Box>
+
+            {adminsLoading ? (
+              <Box sx={{ display: "flex", alignItems: "center", gap: 1, py: 1 }}>
+                <CircularProgress size={18} />
+                <Typography variant="body2" color="text.secondary">
+                  Loading authorized administrators...
+                </Typography>
+              </Box>
+            ) : (
+              <Box sx={{ display: "flex", gap: 1.5, flexWrap: "wrap", mt: 1 }}>
+                {admins.map((adm) => (
+                  <Chip
+                    key={adm._id}
+                    avatar={
+                      <Avatar sx={{ bgcolor: "#003366", color: "#FFD700" }}>
+                        {adm.name ? adm.name[0].toUpperCase() : "A"}
+                      </Avatar>
+                    }
+                    label={`${adm.name} (${adm.email})`}
+                    variant="outlined"
+                    sx={{
+                      fontWeight: 500,
+                      py: 2.2,
+                      px: 1,
+                      borderRadius: 2,
+                      borderColor: "rgba(0, 51, 102, 0.2)",
+                    }}
+                  />
+                ))}
+              </Box>
             )}
           </Paper>
         )}
@@ -626,8 +716,103 @@ const AdminPanel = () => {
             </Button>
           </DialogActions>
         </Dialog>
+
+        {/* Register New Administrator Dialog */}
+        <Dialog
+          open={adminDialogOpen}
+          onClose={() => !newAdminLoading && setAdminDialogOpen(false)}
+          maxWidth="sm"
+          fullWidth
+          aria-labelledby="register-admin-dialog-title"
+        >
+          <form onSubmit={handleRegisterAdmin}>
+            <DialogTitle id="register-admin-dialog-title" sx={{ fontWeight: "bold", color: "#003366" }}>
+              Register New Administrator
+            </DialogTitle>
+            <DialogContent>
+              <DialogContentText sx={{ mb: 3 }}>
+                Provide the credentials for the new administrator. They will be granted full administrative rights to manage participants, voting windows, and platform settings.
+              </DialogContentText>
+
+              {adminActionMessage && (
+                <Alert severity={adminActionMessage.type} sx={{ mb: 2 }}>
+                  {adminActionMessage.text}
+                </Alert>
+              )}
+
+              <TextField
+                autoFocus
+                margin="dense"
+                label="Full Name"
+                type="text"
+                fullWidth
+                variant="outlined"
+                value={newAdmin.name}
+                onChange={(e) => setNewAdmin({ ...newAdmin, name: e.target.value })}
+                required
+                disabled={newAdminLoading}
+                sx={{ mb: 2 }}
+              />
+
+              <TextField
+                margin="dense"
+                label="Administrator Email"
+                type="email"
+                fullWidth
+                variant="outlined"
+                value={newAdmin.email}
+                onChange={(e) => setNewAdmin({ ...newAdmin, email: e.target.value })}
+                required
+                disabled={newAdminLoading}
+                sx={{ mb: 2 }}
+              />
+
+              <TextField
+                margin="dense"
+                label="Initial Password"
+                type="password"
+                fullWidth
+                variant="outlined"
+                value={newAdmin.password}
+                onChange={(e) => setNewAdmin({ ...newAdmin, password: e.target.value })}
+                helperText="Must be at least 6 characters long"
+                required
+                disabled={newAdminLoading}
+              />
+            </DialogContent>
+            <DialogActions sx={{ px: 3, pb: 2.5 }}>
+              <Button
+                onClick={() => setAdminDialogOpen(false)}
+                disabled={newAdminLoading}
+                sx={{ textTransform: "none" }}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="submit"
+                variant="contained"
+                disabled={newAdminLoading}
+                sx={{
+                  bgcolor: "#003366",
+                  color: "#FFD700",
+                  textTransform: "none",
+                  fontWeight: "bold",
+                  "&:hover": { bgcolor: "#002244" },
+                }}
+              >
+                {newAdminLoading ? (
+                  <span className="d-flex align-items-center gap-2">
+                    <CircularProgress size={16} color="inherit" />
+                    Registering...
+                  </span>
+                ) : (
+                  "Create Admin Account"
+                )}
+              </Button>
+            </DialogActions>
+          </form>
+        </Dialog>
       </Container>
-    </Box>
   );
 };
 

@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import axios from "axios";
+import { mutate } from "swr";
 import {
   Container,
   Typography,
@@ -15,17 +16,14 @@ import {
   ListItemButton,
   ListItemText,
   Tooltip,
+  CircularProgress,
+  Alert,
 } from "@mui/material";
 import UploadFileIcon from "@mui/icons-material/UploadFile";
 import PersonAddIcon from "@mui/icons-material/PersonAdd";
-import EmojiEventsIcon from "@mui/icons-material/EmojiEvents";
-import AppRegistrationIcon from "@mui/icons-material/AppRegistration";
 import HomeIcon from "@mui/icons-material/Home";
 import { Link } from "react-router-dom";
 import API_URL from "../api";
-const sidebarCollapsedWidth = 50;
-const sidebarExpandedWidth = 150;
-
 const Register = () => {
   const [formData, setFormData] = useState({
     teamNo: "",
@@ -36,12 +34,19 @@ const Register = () => {
     description: "",
     image: null,
   });
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [statusMessage, setStatusMessage] = useState(null);
 
   const handleChange = (e) => {
     const { name, value, files } = e.target;
     if (files) {
-      setFormData((prev) => ({ ...prev, [name]: files[0] }));
+      const file = files[0];
+      if (file && file.size > 5 * 1024 * 1024) {
+        setStatusMessage({ type: "error", text: "Image is too large. Maximum size is 5MB." });
+        return;
+      }
+      setStatusMessage(null);
+      setFormData((prev) => ({ ...prev, [name]: file }));
     } else {
       setFormData((prev) => ({ ...prev, [name]: value }));
     }
@@ -49,7 +54,9 @@ const Register = () => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    setStatusMessage(null);
 
+    setLoading(true);
     try {
       const data = new FormData();
       data.append("teamNo", formData.teamNo);
@@ -59,22 +66,26 @@ const Register = () => {
       data.append("email", formData.email);
       data.append("description", formData.description);
 
+      // Append image file for Cloudinary upload if selected
       if (formData.image) {
         data.append("image", formData.image);
-      } else {
-        data.append("image", "https://example.com/default.jpg");
       }
 
       const token = localStorage.getItem("token");
-      const headers = { "Content-Type": "multipart/form-data" };
+      const headers = {};
       if (token) {
         headers["Authorization"] = `Bearer ${token}`;
       }
 
       const res = await axios.post(`${API_URL}/addParticipants`, data, { headers });
 
-      console.log("✅ Participant added:", res.data);
-      alert("🎉 Registration Successful!");
+      // Invalidate SWR cache for participants feed so the new entry appears immediately
+      mutate((key) => typeof key === "string" && key.includes("/allParticipants"));
+
+      setStatusMessage({
+        type: "success",
+        text: "🎉 Registration Successful! Project photo uploaded to Cloudinary CDN.",
+      });
       setFormData({
         teamNo: "",
         name: "",
@@ -86,81 +97,17 @@ const Register = () => {
       });
     } catch (error) {
       console.error("❌ Error registering participant:", error);
-      alert(error.response?.data?.error || "Something went wrong! Check console for details.");
+      setStatusMessage({
+        type: "error",
+        text: error.response?.data?.error || "Registration failed. Please verify all details.",
+      });
+    } finally {
+      setLoading(false);
     }
   };
 
-  const sidebarItems = [
-    { text: "Register", icon: <PersonAddIcon />, link: "/register" },
-    { text: "Winners", icon: <EmojiEventsIcon />, link: "/winners" },
-    { text: "Signup", icon: <AppRegistrationIcon />, link: "/signup" },
-  ];
-
   return (
-    <Box sx={{ display: "flex" }}>
-      {/* Collapsible Sidebar */}
-      <Drawer
-        variant="permanent"
-        onMouseEnter={() => setSidebarOpen(true)}
-        onMouseLeave={() => setSidebarOpen(false)}
-        sx={{
-          width: sidebarOpen ? sidebarExpandedWidth : sidebarCollapsedWidth,
-          flexShrink: 0,
-          [`& .MuiDrawer-paper`]: {
-            width: sidebarOpen ? sidebarExpandedWidth : sidebarCollapsedWidth,
-            bgcolor: "rgba(255,255,255,0.1)",
-            color: "#000",
-            backdropFilter: "blur(10px)",
-            overflowX: "hidden",
-            borderRight: "1px solid rgba(0,0,0,0.1)",
-            transition: "width 0.3s",
-          },
-        }}
-      >
-        <Box sx={{ display: "flex", flexDirection: "column", alignItems: "center", py: 3, mb: 2 }}>
-          <HomeIcon fontSize="large" />
-          {sidebarOpen && (
-            <Typography variant="h6" mt={1} fontWeight="bold">
-              Admin Panel
-            </Typography>
-          )}
-        </Box>
-        <List>
-          {sidebarItems.map((item) => (
-            <Tooltip key={item.text} title={!sidebarOpen ? item.text : ""} placement="right">
-              <ListItem disablePadding sx={{ mb: 1 }}>
-                <ListItemButton
-                  component={Link}
-                  to={item.link}
-                  sx={{
-                    borderRadius: 2,
-                    mx: 1,
-                    transition: "0.3s",
-                    color: "#000",
-                    "&:hover": {
-                      bgcolor: "rgba(0,0,0,0.05)",
-                      transform: "scale(1.05)",
-                      color: "#1976d2",
-                    },
-                  }}
-                >
-                  {item.icon}
-                  {sidebarOpen && <ListItemText primary={item.text} sx={{ ml: 2 }} />}
-                </ListItemButton>
-              </ListItem>
-            </Tooltip>
-          ))}
-        </List>
-      </Drawer>
-
-      {/* Main Content */}
-      <Container
-        sx={{
-          py: 6,
-          ml: sidebarCollapsedWidth,
-          width: `calc(100% - ${sidebarCollapsedWidth}px)`,
-        }}
-      >
+    <Container maxWidth="md" sx={{ py: 6 }}>
         <Typography
           variant="h4"
           align="center"
@@ -172,6 +119,12 @@ const Register = () => {
         </Typography>
 
         <Paper elevation={4} sx={{ p: 4, maxWidth: 600, mx: "auto", borderRadius: 3 }}>
+          {statusMessage && (
+            <Alert severity={statusMessage.type} sx={{ mb: 3 }} onClose={() => setStatusMessage(null)}>
+              {statusMessage.text}
+            </Alert>
+          )}
+
           <form onSubmit={handleSubmit} encType="multipart/form-data">
             <Grid container spacing={3}>
               {/* Team Number */}
@@ -256,23 +209,32 @@ const Register = () => {
                   component="label"
                   startIcon={<UploadFileIcon />}
                   fullWidth
+                  disabled={loading}
                 >
-                  Project Image (Optional)
+                  {formData.image
+                    ? `Change Image (${(formData.image.size / (1024 * 1024)).toFixed(2)} MB)`
+                    : "Upload Project Image to Cloudinary"}
                   <input
                     type="file"
-                    accept="image/*"
+                    accept="image/jpeg,image/png,image/webp,image/gif"
                     hidden
                     name="image"
                     onChange={handleChange}
                   />
                 </Button>
+                <Typography variant="caption" color="text.secondary" display="block" textAlign="center" mt={0.5}>
+                  Images are hosted on Cloudinary CDN (Max size: 5MB • Formats: JPEG, PNG, WEBP, GIF)
+                </Typography>
                 {formData.image && (
-                  <Box mt={2} display="flex" justifyContent="center">
+                  <Box mt={2} display="flex" flexDirection="column" alignItems="center">
                     <Avatar
                       src={URL.createObjectURL(formData.image)}
                       alt="preview"
-                      sx={{ width: 100, height: 100 }}
+                      sx={{ width: 100, height: 100, borderRadius: 2, boxShadow: 2 }}
                     />
+                    <Typography variant="caption" color="text.secondary" mt={0.5}>
+                      Selected: {formData.image.name}
+                    </Typography>
                   </Box>
                 )}
               </Grid>
@@ -283,16 +245,23 @@ const Register = () => {
                   variant="contained"
                   color="primary"
                   fullWidth
-                  sx={{ py: 1.5, borderRadius: 2 }}
+                  disabled={loading}
+                  sx={{ py: 1.5, borderRadius: 2, fontWeight: "bold" }}
                 >
-                  Register
+                  {loading ? (
+                    <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
+                      <CircularProgress size={20} color="inherit" />
+                      <span>Uploading to Cloudinary & Registering...</span>
+                    </Box>
+                  ) : (
+                    "Register Project"
+                  )}
                 </Button>
               </Grid>
             </Grid>
           </form>
         </Paper>
       </Container>
-    </Box>
   );
 };
 

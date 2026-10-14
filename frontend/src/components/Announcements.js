@@ -10,9 +10,9 @@ const announcements = [
   },
   {
     id: 2,
-    title: "Hackathon Winners Announced - Check Results",
+    title: "Hackathon Showcase - View All Projects",
     date: "Nov 20, 2025",
-    link: "/winners",
+    link: "/participants",
   },
   {
     id: 3,

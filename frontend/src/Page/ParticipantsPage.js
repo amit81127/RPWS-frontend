@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useMemo, memo } from "react";
+import React, { useState, useEffect, useCallback, useMemo, memo } from "react";
 import axios from "axios";
 import useSWRInfinite from "swr/infinite";
 import { useInView } from "react-intersection-observer";
@@ -14,8 +14,11 @@ import {
   Snackbar,
   Alert,
   Skeleton,
+  TextField,
+  InputAdornment,
 } from "@mui/material";
 import ShareIcon from "@mui/icons-material/Share";
+import SearchIcon from "@mui/icons-material/Search";
 import WhatsAppIcon from "@mui/icons-material/WhatsApp";
 import FacebookIcon from "@mui/icons-material/Facebook";
 import TwitterIcon from "@mui/icons-material/Twitter";
@@ -49,6 +52,10 @@ const LazyImage = ({ src, alt }) => {
       src={inView ? src : ""}
       alt={alt}
       loading="lazy"
+      onError={(e) => {
+        e.target.onerror = null;
+        e.target.src = "https://via.placeholder.com/300?text=No+Preview";
+      }}
       sx={{
         width: "100%",
         height: 150,
@@ -157,17 +164,48 @@ const ParticipantCard = memo(({ participant, voted, onVote }) => (
 
 const ParticipantsPage = () => {
   const [anchorEl, setAnchorEl] = useState(null);
+  const [guestVotes, setGuestVotes] = useState(getGuestVotes);
   const [snackbar, setSnackbar] = useState({
     open: false,
     message: "",
     severity: "success",
   });
 
-  // ---- SWR Infinite for Pagination ----
-  const getKey = (pageIndex, previousPageData) => {
-    if (previousPageData && !previousPageData.data.length) return null; // reached the end
-    return `${API_URL}/allParticipants?page=${pageIndex + 1}&limit=6`;
-  };
+  // Sync server-recorded votes for authenticated voter across sessions and devices
+  useEffect(() => {
+    const token = localStorage.getItem("token");
+    if (!token) return;
+
+    axios
+      .get(`${API_URL}/myVotes`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      .then((res) => {
+        if (res.data?.votedParticipantIds && Array.isArray(res.data.votedParticipantIds)) {
+          setGuestVotes((prev) => {
+            const nextVotes = { ...prev };
+            res.data.votedParticipantIds.forEach((id) => {
+              nextVotes[id] = nextVotes[id] || Date.now();
+            });
+            try {
+              localStorage.setItem(VOTE_STORAGE_KEY, JSON.stringify(nextVotes));
+            } catch {}
+            return nextVotes;
+          });
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  // ---- Stable SWR Infinite key generator ----
+  const getKey = useCallback((pageIndex, previousPageData) => {
+    if (previousPageData) {
+      if (previousPageData.meta && previousPageData.meta.hasMore === false) return null;
+      if (Array.isArray(previousPageData.data) && previousPageData.data.length === 0) return null;
+      if (Array.isArray(previousPageData) && previousPageData.length === 0) return null;
+    }
+    return `${API_URL}/allParticipants?page=${pageIndex + 1}&limit=12`;
+  }, []);
 
   const { data, mutate, size, setSize, isLoading } = useSWRInfinite(
     getKey,
@@ -175,17 +213,46 @@ const ParticipantsPage = () => {
     {
       revalidateFirstPage: false,
       revalidateOnFocus: false,
+      revalidateIfStale: false,
+      dedupingInterval: 4000,
     }
   );
 
-  const allParticipants = data ? data.flatMap((page) => {
-    // Handle both new pagination format { data: [...] } and old array format [...]
-    if (Array.isArray(page)) return page;
-    return page.data || [];
-  }) : [];
+  const allParticipants = useMemo(() => {
+    if (!data) return [];
+    return data.flatMap((page) => {
+      // Handle both new pagination format { data: [...] } and old array format [...]
+      if (Array.isArray(page)) return page;
+      return page.data || [];
+    });
+  }, [data]);
+
+  // Debounced search filtering to prevent re-render thrashing
+  const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(search);
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [search]);
+
+  const filteredParticipants = useMemo(() => {
+    if (!debouncedSearch.trim()) return allParticipants;
+    const query = debouncedSearch.trim().toLowerCase();
+    return allParticipants.filter((p) => {
+      const name = (p.name || "").toLowerCase();
+      const proj = (p.projectName || "").toLowerCase();
+      const dept = (p.department || "").toLowerCase();
+      const team = p.teamNo ? String(p.teamNo).toLowerCase() : "";
+      return name.includes(query) || proj.includes(query) || dept.includes(query) || team.includes(query);
+    });
+  }, [allParticipants, debouncedSearch]);
+
   const isLoadingMore = isLoading || (size > 0 && data && typeof data[size - 1] === "undefined");
   const isEmpty = data?.[0]?.data?.length === 0;
-  const isReachingEnd = isEmpty || (data && data[data.length - 1]?.data?.length < 6);
+  const isReachingEnd = isEmpty || (data && data[data.length - 1]?.data?.length < 12);
 
   const loading = isLoading && !data;
 
@@ -223,14 +290,42 @@ const ParticipantsPage = () => {
           { headers: { Authorization: `Bearer ${token}` } }
         );
 
-        mutate(); // refresh from server
+        // Update cache with confirmed server tally without triggering refetch cascade
+        if (res.data && typeof res.data.votes === "number") {
+          mutate(
+            (currentData) => {
+              if (!currentData) return currentData;
+              return currentData.map((page) => ({
+                ...page,
+                data: page.data.map((p) =>
+                  p._id === id ? { ...p, votes: res.data.votes } : p
+                ),
+              }));
+            },
+            { revalidate: false }
+          );
+        }
         if (res.data?.alreadyVoted) {
+          setGuestVotes((prev) => {
+            const updated = { ...prev, [id]: Date.now() };
+            try {
+              localStorage.setItem(VOTE_STORAGE_KEY, JSON.stringify(updated));
+            } catch {}
+            return updated;
+          });
           setSnackbar({
             open: true,
             message: "Vote already recorded for this participant.",
             severity: "info",
           });
         } else {
+          setGuestVotes((prev) => {
+            const updated = { ...prev, [id]: Date.now() };
+            try {
+              localStorage.setItem(VOTE_STORAGE_KEY, JSON.stringify(updated));
+            } catch {}
+            return updated;
+          });
           setSnackbar({
             open: true,
             message: "Vote Successful!",
@@ -239,6 +334,15 @@ const ParticipantsPage = () => {
         }
       } catch (err) {
         mutate();
+        if (err.response?.status === 409) {
+          setGuestVotes((prev) => {
+            const updated = { ...prev, [id]: Date.now() };
+            try {
+              localStorage.setItem(VOTE_STORAGE_KEY, JSON.stringify(updated));
+            } catch {}
+            return updated;
+          });
+        }
         const errorMsg =
           err.response?.data?.error ||
           (err.response?.status === 401
@@ -273,15 +377,39 @@ const ParticipantsPage = () => {
     window.open(links[platform], "_blank");
   };
 
-  const guestVotes = useMemo(() => getGuestVotes(), []);
-
   return (
     <Container sx={{ py: 6 }}>
       <Typography variant="h4" align="center" fontWeight="bold" sx={{ mb: 4 }}>
         🏅 Participants of the Event
       </Typography>
 
-      <Box sx={{ display: "flex", justifyContent: "center", mb: 4 }}>
+      <Box
+        sx={{
+          display: "flex",
+          flexDirection: { xs: "column", sm: "row" },
+          gap: 2,
+          justifyContent: "space-between",
+          alignItems: "center",
+          maxWidth: 950,
+          mx: "auto",
+          mb: 4,
+        }}
+      >
+        <TextField
+          size="small"
+          placeholder="Search by project, department, team..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          sx={{ width: { xs: "100%", sm: 350 }, bgcolor: "white", borderRadius: 1 }}
+          InputProps={{
+            startAdornment: (
+              <InputAdornment position="start">
+                <SearchIcon color="action" />
+              </InputAdornment>
+            ),
+          }}
+        />
+
         <Button variant="outlined" startIcon={<ShareIcon />} onClick={handleShareClick}>
           Share Participants
         </Button>
@@ -310,7 +438,8 @@ const ParticipantsPage = () => {
                 <Skeleton variant="rectangular" height={500} sx={{ borderRadius: 3 }} />
               </Grid>
             ))
-          : allParticipants?.map((p) => {
+          : filteredParticipants.length > 0
+          ? filteredParticipants.map((p) => {
               const voted =
                 guestVotes[p._id] &&
                 Date.now() - guestVotes[p._id] < VOTE_COOLDOWN_MS;
@@ -323,12 +452,19 @@ const ParticipantsPage = () => {
                   onVote={handleVote}
                 />
               );
-            })}
+            })
+          : debouncedSearch.trim() && (
+              <Box textAlign="center" py={6} width="100%">
+                <Typography variant="h6" color="text.secondary">
+                  🔍 No projects match "{debouncedSearch}"
+                </Typography>
+              </Box>
+            )}
       </Grid>
 
-      {/* Load More Button */}
-      <Box sx={{ display: "flex", justifyContent: "center", mt: 4 }}>
-        {!isReachingEnd && (
+      {/* Load More Button (only when not actively filtering) */}
+      {!debouncedSearch.trim() && !isReachingEnd && (
+        <Box sx={{ display: "flex", justifyContent: "center", mt: 4 }}>
           <Button
             variant="contained"
             onClick={() => setSize(size + 1)}
@@ -337,8 +473,8 @@ const ParticipantsPage = () => {
           >
             {isLoadingMore ? "Loading..." : "Load More"}
           </Button>
-        )}
-      </Box>
+        </Box>
+      )}
 
       <Snackbar
         open={snackbar.open}

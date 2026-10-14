@@ -1,0 +1,15 @@
+{
+  "short_name": "ExpoVote",
+  "name": "AITM ✕ Sanganak Shila - ExpoVote",
+  "icons": [
+    {
+      "src": "aitm-logo-cropped.png",
+      "sizes": "192x192 512x512",
+      "type": "image/png"
+    }
+  ],
+  "start_url": ".",
+  "display": "standalone",
+  "theme_color": "#4f46e5",
+  "background_color": "#ffffff"
+}
