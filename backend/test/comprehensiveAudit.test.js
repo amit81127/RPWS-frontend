@@ -7,7 +7,9 @@ const app = require("../index");
 const User = require("../models/userModel");
 const { ParticipantsModel } = require("../models/participantsModels");
 const VoteModel = require("../models/voteModel");
+const SettingModel = require("../models/settingModel");
 const { getJwtSecret } = require("../middleware/auth");
+const { setVotingEnabled, isVotingEnabled } = require("../services/voteService");
 
 const TEST_MONGO_URL = process.env.MONGO_URL || "mongodb://127.0.0.1:27017/ratingdb_test";
 
@@ -21,12 +23,14 @@ beforeEach(async () => {
   await User.deleteMany({});
   await ParticipantsModel.deleteMany({});
   await VoteModel.deleteMany({});
+  await SettingModel.deleteMany({});
 });
 
 afterAll(async () => {
   await User.deleteMany({});
   await ParticipantsModel.deleteMany({});
   await VoteModel.deleteMany({});
+  await SettingModel.deleteMany({});
   await mongoose.connection.close();
 });
 
@@ -382,6 +386,8 @@ describe("5. Successful voting", () => {
       votes: 0,
     });
     participantId = p._id.toString();
+
+    await setVotingEnabled(true);
   });
 
   test("Authenticated student successfully casts a vote and increments tally", async () => {
@@ -429,6 +435,8 @@ describe("6. Duplicate-vote rejection", () => {
     const p2 = await ParticipantsModel.create({ name: "Project Beta", votes: 0 });
     p1Id = p1._id.toString();
     p2Id = p2._id.toString();
+
+    await setVotingEnabled(true);
   });
 
   test("Rejects vote for different participant in same contest with HTTP 409", async () => {
@@ -498,6 +506,7 @@ describe("7. Unauthorized voting attempts", () => {
   beforeEach(async () => {
     const p = await ParticipantsModel.create({ name: "Secure Project", votes: 0 });
     participantId = p._id.toString();
+    await setVotingEnabled(true);
   });
 
   test("Unauthenticated vote request returns HTTP 401", async () => {
@@ -782,5 +791,399 @@ describe("12. API error handling", () => {
 
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/Invalid participant identifier/i);
+  });
+});
+
+// =========================================================================
+// 9. Admin-Controlled Voting Window Controls and Security
+// =========================================================================
+describe("9. Admin-Controlled Voting Window Controls and Security", () => {
+  let adminToken;
+  let studentToken;
+  let participantId;
+
+  beforeEach(async () => {
+    const admin = await User.create({
+      name: "Super Admin",
+      email: "voting_admin@college.edu",
+      password: "adminPassword123",
+      role: "admin",
+    });
+    adminToken = jwt.sign({ id: admin._id.toString(), role: "admin" }, getJwtSecret());
+
+    const student = await User.create({
+      name: "Regular Voter",
+      email: "window_voter@college.edu",
+      password: "password123",
+      role: "student",
+    });
+    studentToken = jwt.sign({ id: student._id.toString(), role: "student" }, getJwtSecret());
+
+    const p = await ParticipantsModel.create({
+      name: "Eco Drone Project",
+      department: "Aero",
+      votes: 0,
+    });
+    participantId = p._id.toString();
+  });
+
+  test("1. Voting is disabled by default and rejects voting attempts with HTTP 403", async () => {
+    // Fresh state with no settings document
+    const status = await isVotingEnabled();
+    expect(status).toBe(false);
+
+    const res = await request(app)
+      .post(`/voteParticipant/${participantId}`)
+      .set("Authorization", `Bearer ${studentToken}`)
+      .send({ contestId: "default" });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toMatch(/Voting is currently closed/i);
+    expect(res.body.votingEnabled).toBe(false);
+
+    const p = await ParticipantsModel.findById(participantId);
+    expect(p.votes).toBe(0);
+    const voteCount = await VoteModel.countDocuments();
+    expect(voteCount).toBe(0);
+  });
+
+  test("2. Unauthenticated users cannot read or modify administrative voting settings", async () => {
+    const resGet = await request(app).get("/admin/votingStatus");
+    expect(resGet.status).toBe(401);
+
+    const resStart = await request(app).post("/admin/startVoting");
+    expect(resStart.status).toBe(401);
+
+    const resStop = await request(app).post("/admin/stopVoting");
+    expect(resStop.status).toBe(401);
+  });
+
+  test("3. Students cannot read or modify voting settings with HTTP 403", async () => {
+    const resGet = await request(app)
+      .get("/admin/votingStatus")
+      .set("Authorization", `Bearer ${studentToken}`);
+    expect(resGet.status).toBe(403);
+    expect(resGet.body.error).toMatch(/Administrator privileges required/i);
+
+    const resStart = await request(app)
+      .post("/admin/startVoting")
+      .set("Authorization", `Bearer ${studentToken}`);
+    expect(resStart.status).toBe(403);
+
+    const resStop = await request(app)
+      .post("/admin/stopVoting")
+      .set("Authorization", `Bearer ${studentToken}`);
+    expect(resStop.status).toBe(403);
+  });
+
+  test("4. Admin can retrieve voting status, start voting, and stop voting", async () => {
+    // Initial status: closed
+    const initialStatus = await request(app)
+      .get("/admin/votingStatus")
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(initialStatus.status).toBe(200);
+    expect(initialStatus.body.votingEnabled).toBe(false);
+
+    // Admin starts voting
+    const startRes = await request(app)
+      .post("/admin/startVoting")
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(startRes.status).toBe(200);
+    expect(startRes.body.votingEnabled).toBe(true);
+    expect(startRes.body.message).toMatch(/started/i);
+
+    // Status check confirms open
+    const openStatus = await request(app)
+      .get("/admin/votingStatus")
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(openStatus.status).toBe(200);
+    expect(openStatus.body.votingEnabled).toBe(true);
+
+    // Admin stops voting
+    const stopRes = await request(app)
+      .post("/admin/stopVoting")
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(stopRes.status).toBe(200);
+    expect(stopRes.body.votingEnabled).toBe(false);
+    expect(stopRes.body.message).toMatch(/stopped/i);
+
+    // Status check confirms closed
+    const closedStatus = await request(app)
+      .get("/admin/votingStatus")
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(closedStatus.status).toBe(200);
+    expect(closedStatus.body.votingEnabled).toBe(false);
+  });
+
+  test("5. Vote requests are allowed while voting is open and rejected when closed", async () => {
+    // 1. Initially closed -> rejected
+    const resClosed = await request(app)
+      .post(`/voteParticipant/${participantId}`)
+      .set("Authorization", `Bearer ${studentToken}`)
+      .send({ contestId: "open_close_test" });
+    expect(resClosed.status).toBe(403);
+
+    // 2. Admin opens voting -> accepted
+    await request(app)
+      .post("/admin/startVoting")
+      .set("Authorization", `Bearer ${adminToken}`);
+
+    const resOpen = await request(app)
+      .post(`/voteParticipant/${participantId}`)
+      .set("Authorization", `Bearer ${studentToken}`)
+      .send({ contestId: "open_close_test" });
+    expect(resOpen.status).toBe(200);
+    expect(resOpen.body.message).toBe("Vote counted");
+
+    // 3. Admin closes voting -> rejected for subsequent attempts
+    await request(app)
+      .post("/admin/stopVoting")
+      .set("Authorization", `Bearer ${adminToken}`);
+
+    const student2 = await User.create({
+      name: "Late Voter",
+      email: "late@college.edu",
+      password: "p",
+      role: "student",
+    });
+    const student2Token = jwt.sign({ id: student2._id.toString(), role: "student" }, getJwtSecret());
+
+    const resClosedAgain = await request(app)
+      .post(`/voteParticipant/${participantId}`)
+      .set("Authorization", `Bearer ${student2Token}`)
+      .send({ contestId: "open_close_test" });
+    expect(resClosedAgain.status).toBe(403);
+    expect(resClosedAgain.body.error).toMatch(/Voting is currently closed/i);
+  });
+
+  test("6. Stopping voting preserves existing recorded votes and ledger records", async () => {
+    // Open voting and record a vote
+    await request(app)
+      .post("/admin/startVoting")
+      .set("Authorization", `Bearer ${adminToken}`);
+
+    await request(app)
+      .post(`/voteParticipant/${participantId}`)
+      .set("Authorization", `Bearer ${studentToken}`)
+      .send({ contestId: "preservation_test" });
+
+    // Stop voting
+    await request(app)
+      .post("/admin/stopVoting")
+      .set("Authorization", `Bearer ${adminToken}`);
+
+    // Verify participant tally remains preserved
+    const p = await ParticipantsModel.findById(participantId);
+    expect(p.votes).toBe(1);
+
+    // Verify ledger entry remains preserved
+    const voteRecord = await VoteModel.findOne({ contestId: "preservation_test" });
+    expect(voteRecord).toBeTruthy();
+    expect(voteRecord.participantId.toString()).toBe(participantId);
+
+    // Reopen and add another vote
+    await request(app)
+      .post("/admin/startVoting")
+      .set("Authorization", `Bearer ${adminToken}`);
+
+    const voter2 = await User.create({
+      name: "Voter Two",
+      email: "voter2_pres@college.edu",
+      password: "p",
+      role: "student",
+    });
+    const voter2Token = jwt.sign({ id: voter2._id.toString(), role: "student" }, getJwtSecret());
+
+    await request(app)
+      .post(`/voteParticipant/${participantId}`)
+      .set("Authorization", `Bearer ${voter2Token}`)
+      .send({ contestId: "preservation_test" });
+
+    // Stop voting again
+    await request(app)
+      .post("/admin/stopVoting")
+      .set("Authorization", `Bearer ${adminToken}`);
+
+    const pUpdated = await ParticipantsModel.findById(participantId);
+    expect(pUpdated.votes).toBe(2);
+    const totalVotes = await VoteModel.countDocuments({ contestId: "preservation_test" });
+    expect(totalVotes).toBe(2);
+  });
+
+  test("7. Duplicate-vote protection remains intact while voting is open", async () => {
+    await request(app)
+      .post("/admin/startVoting")
+      .set("Authorization", `Bearer ${adminToken}`);
+
+    const p2 = await ParticipantsModel.create({ name: "Project Two", votes: 0 });
+
+    // First vote for p1
+    const res1 = await request(app)
+      .post(`/voteParticipant/${participantId}`)
+      .set("Authorization", `Bearer ${studentToken}`)
+      .send({ contestId: "dup_test" });
+    expect(res1.status).toBe(200);
+
+    // Idempotent retry for same participant
+    const resSame = await request(app)
+      .post(`/voteParticipant/${participantId}`)
+      .set("Authorization", `Bearer ${studentToken}`)
+      .send({ contestId: "dup_test" });
+    expect(resSame.status).toBe(200);
+    expect(resSame.body.alreadyVoted).toBe(true);
+
+    // Different participant in same contest -> rejected with 409
+    const resOther = await request(app)
+      .post(`/voteParticipant/${p2._id}`)
+      .set("Authorization", `Bearer ${studentToken}`)
+      .send({ contestId: "dup_test" });
+    expect(resOther.status).toBe(409);
+  });
+
+  test("8. Concurrent requests cannot bypass the voting state check when closed", async () => {
+    // Explicitly verify voting is closed
+    await setVotingEnabled(false);
+
+    // Prepare 10 concurrent requests from 10 distinct voters
+    const voters = await Promise.all(
+      Array.from({ length: 10 }, async (_, i) => {
+        const u = await User.create({
+          name: `Concurrent Voter ${i}`,
+          email: `concurrent_${i}@college.edu`,
+          password: "p",
+          role: "student",
+        });
+        return jwt.sign({ id: u._id.toString(), role: "student" }, getJwtSecret());
+      })
+    );
+
+    const responses = await Promise.all(
+      voters.map((token) =>
+        request(app)
+          .post(`/voteParticipant/${participantId}`)
+          .set("Authorization", `Bearer ${token}`)
+          .send({ contestId: "concurrent_closed_test" })
+      )
+    );
+
+    // Every single concurrent request must be rejected with 403
+    for (const res of responses) {
+      expect(res.status).toBe(403);
+      expect(res.body.error).toMatch(/Voting is currently closed/i);
+    }
+
+    // Zero votes recorded
+    const p = await ParticipantsModel.findById(participantId);
+    expect(p.votes).toBe(0);
+    const voteCount = await VoteModel.countDocuments({ contestId: "concurrent_closed_test" });
+    expect(voteCount).toBe(0);
+  });
+
+  test("9. Voting state persists in MongoDB across backend restarts", async () => {
+    // 1. Enable via admin API
+    await request(app)
+      .post("/admin/startVoting")
+      .set("Authorization", `Bearer ${adminToken}`);
+
+    // Verify direct database persistence (simulating fresh server reading DB on startup)
+    const storedSetting = await SettingModel.findOne({ key: "votingEnabled" });
+    expect(storedSetting).toBeTruthy();
+    expect(storedSetting.value).toBe(true);
+
+    const directCheck = await isVotingEnabled();
+    expect(directCheck).toBe(true);
+
+    // 2. Disable via admin API
+    await request(app)
+      .post("/admin/stopVoting")
+      .set("Authorization", `Bearer ${adminToken}`);
+
+    const storedSettingClosed = await SettingModel.findOne({ key: "votingEnabled" });
+    expect(storedSettingClosed.value).toBe(false);
+
+    const directCheckClosed = await isVotingEnabled();
+    expect(directCheckClosed).toBe(false);
+  });
+
+  test("10. In-flight vote is safely aborted/rejected when stopVoting overlaps and completes before commit", async () => {
+    // 1. Ensure voting is currently open
+    await request(app)
+      .post("/admin/startVoting")
+      .set("Authorization", `Bearer ${adminToken}`);
+
+    // Create a new voter
+    const inflightStudent = await User.create({
+      name: "Inflight Voter",
+      email: "inflight@college.edu",
+      password: "password123",
+      role: "student",
+    });
+    const inflightToken = jwt.sign({ id: inflightStudent._id.toString(), role: "student" }, getJwtSecret());
+
+    // 2. Intercept VoteModel.create to inject the stopVoting call mid-flight
+    const originalCreate = VoteModel.create;
+    let stopVotingCompleted = false;
+
+    jest.spyOn(VoteModel, "create").mockImplementation(async function (...args) {
+      // Simulate slow in-flight vote: trigger stopVoting while this vote is in-flight!
+      const stopRes = await request(app)
+        .post("/admin/stopVoting")
+        .set("Authorization", `Bearer ${adminToken}`);
+      expect(stopRes.status).toBe(200);
+      expect(stopRes.body.votingEnabled).toBe(false);
+      stopVotingCompleted = true;
+
+      // Now call original create
+      return originalCreate.apply(this, args);
+    });
+
+    try {
+      // 3. Dispatch the vote request. It will trigger the mock, which stops voting mid-flight!
+      const res = await request(app)
+        .post(`/voteParticipant/${participantId}`)
+        .set("Authorization", `Bearer ${inflightToken}`)
+        .send({ contestId: "inflight_test" });
+
+      // 4. Verify that the overlapping in-flight vote is REJECTED with HTTP 403
+      expect(stopVotingCompleted).toBe(true);
+      expect(res.status).toBe(403);
+      expect(res.body.error).toMatch(/Voting (is currently closed|was closed)/i);
+
+      // 5. Verify database integrity: NO vote record committed, participant votes remain 0
+      const p = await ParticipantsModel.findById(participantId);
+      expect(p.votes).toBe(0);
+
+      const voteRecord = await VoteModel.findOne({
+        voterId: inflightStudent._id,
+        contestId: "inflight_test",
+      });
+      expect(voteRecord).toBeNull();
+    } finally {
+      VoteModel.create.mockRestore();
+    }
+  });
+
+  test("11. Fails closed when database error occurs during voting status lookup", async () => {
+    // Spy on SettingModel.findOne to simulate transient database error
+    const spy = jest.spyOn(SettingModel, "findOne").mockImplementationOnce(() => {
+      throw new Error("Simulated connection timeout to database");
+    });
+
+    try {
+      // isVotingEnabled safely returns false (failing closed)
+      const status = await isVotingEnabled();
+      expect(status).toBe(false);
+
+      // Attempting to vote during DB error fails closed with HTTP 403
+      const res = await request(app)
+        .post(`/voteParticipant/${participantId}`)
+        .set("Authorization", `Bearer ${studentToken}`)
+        .send({ contestId: "fail_closed_test" });
+
+      expect(res.status).toBe(403);
+      expect(res.body.error).toMatch(/Voting is currently closed/i);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

@@ -81,11 +81,17 @@ FRONTEND_URL=https://your-frontend-url.com
 - `POST /login` - Login user
 
 ### Participants
-- `GET /allParticipants` - Get all participants
+- `GET /allParticipants` - Get all participants (paginated)
 - `GET /allParticipantsByVotes` - Get participants sorted by votes (leaderboard)
-- `POST /addParticipants` - Add new participant (with image upload)
-- `DELETE /deleteParticipant/:id` - Delete participant by ID
-- `POST /voteParticipant/:id` - Vote for a participant
+- `POST /addParticipants` - Add new participant (authenticated students/admins)
+- `DELETE /deleteParticipant/:id` - Delete participant by ID (admin only)
+- `POST /voteParticipant/:id` - Vote for a participant (authenticated, during open voting window)
+
+### Admin Controls (Admin JWT Required)
+- `GET /admin/votingStatus` - Retrieve current voting window status (`votingEnabled`)
+- `POST /admin/startVoting` - Open the voting window for students
+- `POST /admin/stopVoting` - Close the voting window (preserves all recorded votes)
+- `POST /admin/reconcileVotes` - Reconcile participant counters against canonical ledger
 
 ## 🚀 Deploy to Render
 

@@ -10,9 +10,10 @@ const jwt = require("jsonwebtoken");
 const { ParticipantsModel } = require("./models/participantsModels");
 const User = require("./models/userModel");
 const VoteModel = require("./models/voteModel");
+const SettingModel = require("./models/settingModel");
 const { authMiddleware, adminOnly, getJwtSecret } = require("./middleware/auth");
 const { handleUpload, cloudinary } = require("./middleware/upload");
-const { reconcileVotes } = require("./services/voteService");
+const { reconcileVotes, isVotingEnabled, isVotingEnabledSync, setVotingEnabled } = require("./services/voteService");
 const { authLimiter, uploadLimiter, voteLimiter, readLimiter } = require("./middleware/rateLimiter");
 
 const PORT = parseInt(process.env.PORT) || 5000;
@@ -358,6 +359,14 @@ app.post("/voteParticipant/:id", authMiddleware, voteLimiter, async (req, res) =
     const voterId = req.user.id;
     const contestId = req.body && req.body.contestId ? String(req.body.contestId).trim() : "default";
 
+    // 0. Server-side check: Reject with HTTP 403 when voting window is closed
+    if (!isVotingEnabledSync() || !(await isVotingEnabled())) {
+      return res.status(403).json({
+        error: "Voting is currently closed. Please contact an administrator.",
+        votingEnabled: false,
+      });
+    }
+
     if (!mongoose.Types.ObjectId.isValid(participantId)) {
       return res.status(400).json({ error: "Invalid participant identifier" });
     }
@@ -401,6 +410,23 @@ app.post("/voteParticipant/:id", authMiddleware, voteLimiter, async (req, res) =
         try {
           session = await mongoose.startSession();
           session.startTransaction();
+
+          // Serialization check inside transaction:
+          // Atomically update setting document with { value: true }.
+          // This acquires a write lock in MongoDB, serializing against concurrent stopVoting writes!
+          const activeInTx = await SettingModel.findOneAndUpdate(
+            { key: "votingEnabled", value: true },
+            { $set: { lastVoteActivityAt: new Date() } },
+            { session, new: true }
+          );
+
+          if (!activeInTx || !isVotingEnabledSync()) {
+            await session.abortTransaction();
+            return res.status(403).json({
+              error: "Voting is currently closed. Please contact an administrator.",
+              votingEnabled: false,
+            });
+          }
 
           await VoteModel.create(
             [{ voterId, participantId, contestId }],
@@ -498,6 +524,18 @@ app.post("/voteParticipant/:id", authMiddleware, voteLimiter, async (req, res) =
       }
     } else {
       // Standalone MongoDB (Single): Use unique compound index on Vote model first to guarantee atomicity
+      const activeSetting = await SettingModel.findOneAndUpdate(
+        { key: "votingEnabled", value: true },
+        { $set: { lastVoteActivityAt: new Date() } },
+        { new: true }
+      );
+      if (!activeSetting || !isVotingEnabledSync()) {
+        return res.status(403).json({
+          error: "Voting is currently closed. Please contact an administrator.",
+          votingEnabled: false,
+        });
+      }
+
       let voteRecord = null;
       try {
         voteRecord = await VoteModel.create({ voterId, participantId, contestId });
@@ -508,6 +546,17 @@ app.post("/voteParticipant/:id", authMiddleware, voteLimiter, async (req, res) =
         throw createErr;
       }
 
+      // Check if stopVoting intervened while creating vote record
+      if (!isVotingEnabledSync() || !(await isVotingEnabled())) {
+        if (voteRecord && voteRecord._id) {
+          await VoteModel.findByIdAndDelete(voteRecord._id);
+        }
+        return res.status(403).json({
+          error: "Voting was closed while processing your request.",
+          votingEnabled: false,
+        });
+      }
+
       // If vote was successfully inserted, atomically increment tally
       try {
         const updated = await ParticipantsModel.findByIdAndUpdate(
@@ -515,6 +564,19 @@ app.post("/voteParticipant/:id", authMiddleware, voteLimiter, async (req, res) =
           { $inc: { votes: 1 } },
           { new: true }
         );
+
+        // Final cutoff check before sending successful response
+        if (!isVotingEnabledSync() || !(await isVotingEnabled())) {
+          if (voteRecord && voteRecord._id) {
+            await VoteModel.findByIdAndDelete(voteRecord._id);
+          }
+          await ParticipantsModel.findByIdAndUpdate(participantId, { $inc: { votes: -1 } });
+          return res.status(403).json({
+            error: "Voting was closed while processing your request.",
+            votingEnabled: false,
+          });
+        }
+
         return res.json({ message: "Vote counted", votes: updated ? updated.votes : participant.votes + 1 });
       } catch (incErr) {
         // Compensating rollback if counter increment failed
@@ -563,6 +625,50 @@ app.post("/admin/reconcileVotes", authMiddleware, adminOnly, async (req, res) =>
   } catch (err) {
     console.error("Reconciliation Error:", err);
     res.status(500).json({ error: err.message || "Server error during reconciliation" });
+  }
+});
+
+// ---------- ADMIN VOTING WINDOW CONTROLS ----------
+
+// Get current voting status (Admin only)
+app.get(["/admin/votingStatus", "/admin/voting-status"], authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const enabled = await isVotingEnabled();
+    return res.json({
+      votingEnabled: enabled,
+      message: enabled ? "Voting is currently open" : "Voting is currently closed",
+    });
+  } catch (err) {
+    console.error("Error retrieving voting status:", err);
+    return res.status(500).json({ error: "Failed to retrieve voting status" });
+  }
+});
+
+// Start voting window (Admin only)
+app.post(["/admin/startVoting", "/admin/start-voting"], authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const enabled = await setVotingEnabled(true);
+    return res.json({
+      message: "Voting has been started successfully",
+      votingEnabled: enabled,
+    });
+  } catch (err) {
+    console.error("Error starting voting:", err);
+    return res.status(500).json({ error: "Failed to start voting" });
+  }
+});
+
+// Stop voting window (Admin only)
+app.post(["/admin/stopVoting", "/admin/stop-voting"], authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const enabled = await setVotingEnabled(false);
+    return res.json({
+      message: "Voting has been stopped successfully",
+      votingEnabled: enabled,
+    });
+  } catch (err) {
+    console.error("Error stopping voting:", err);
+    return res.status(500).json({ error: "Failed to stop voting" });
   }
 });
 

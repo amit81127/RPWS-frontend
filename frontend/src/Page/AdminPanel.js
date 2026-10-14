@@ -12,6 +12,8 @@ import {
   Chip,
   Dialog,
   DialogTitle,
+  DialogContent,
+  DialogContentText,
   DialogActions,
   Button,
   Drawer,
@@ -22,6 +24,8 @@ import {
   Tooltip,
   Pagination,
   Alert,
+  Paper,
+  Stack,
 } from "@mui/material";
 import DeleteIcon from "@mui/icons-material/Delete";
 import PersonAddIcon from "@mui/icons-material/PersonAdd";
@@ -29,6 +33,7 @@ import EmojiEventsIcon from "@mui/icons-material/EmojiEvents";
 import AppRegistrationIcon from "@mui/icons-material/AppRegistration";
 import HomeIcon from "@mui/icons-material/Home";
 import { Link } from "react-router-dom";
+import { jwtDecode } from "jwt-decode";
 
 import { motion } from "framer-motion";
 import API_URL from "../api";
@@ -44,6 +49,25 @@ const AdminPanel = () => {
   const [deleteDialog, setDeleteDialog] = useState({ open: false, id: null });
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
+  // Determine administrator role from current token
+  const token = localStorage.getItem("token");
+  let isAdmin = false;
+  if (token) {
+    try {
+      const decoded = jwtDecode(token);
+      isAdmin = decoded.role === "admin";
+    } catch (_) {
+      isAdmin = false;
+    }
+  }
+
+  // Voting control window state
+  const [votingStatus, setVotingStatus] = useState(null); // boolean | null
+  const [votingLoading, setVotingLoading] = useState(false);
+  const [votingActionInProgress, setVotingActionInProgress] = useState(false);
+  const [votingMessage, setVotingMessage] = useState(null); // { type: 'success' | 'error', text: string } | null
+  const [votingConfirmDialog, setVotingConfirmDialog] = useState({ open: false, action: null });
+
   // Pagination state (default limit 50 aligned with backend max limit)
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
@@ -51,6 +75,66 @@ const AdminPanel = () => {
   const limit = 50;
 
   const activeRequestRef = useRef(null);
+
+  // Fetch voting status from backend (Admin only)
+  const fetchVotingStatus = useCallback(async () => {
+    if (!isAdmin) return;
+    setVotingLoading(true);
+    try {
+      const currentToken = localStorage.getItem("token");
+      const { data } = await axios.get(`${API_URL}/admin/votingStatus`, {
+        headers: currentToken ? { Authorization: `Bearer ${currentToken}` } : {},
+      });
+      setVotingStatus(Boolean(data.votingEnabled));
+    } catch (err) {
+      console.error("Error fetching voting status:", err);
+      setVotingStatus(false);
+      setVotingMessage({
+        type: "error",
+        text: err.response?.data?.error || "Failed to load voting status from server.",
+      });
+    } finally {
+      setVotingLoading(false);
+    }
+  }, [isAdmin]);
+
+  useEffect(() => {
+    if (isAdmin) {
+      fetchVotingStatus();
+    }
+  }, [isAdmin, fetchVotingStatus]);
+
+  // Execute start or stop voting action after confirmation
+  const handleVotingAction = async (action) => {
+    setVotingConfirmDialog({ open: false, action: null });
+    setVotingActionInProgress(true);
+    setVotingMessage(null);
+    try {
+      const currentToken = localStorage.getItem("token");
+      const endpoint = action === "start" ? "/admin/startVoting" : "/admin/stopVoting";
+      const { data } = await axios.post(
+        `${API_URL}${endpoint}`,
+        {},
+        {
+          headers: currentToken ? { Authorization: `Bearer ${currentToken}` } : {},
+        }
+      );
+      setVotingMessage({
+        type: "success",
+        text: data.message || `Voting ${action === "start" ? "started" : "stopped"} successfully!`,
+      });
+      // Refresh status from backend rather than trusting only local state
+      await fetchVotingStatus();
+    } catch (err) {
+      console.error(`Error during ${action} voting:`, err);
+      setVotingMessage({
+        type: "error",
+        text: err.response?.data?.error || `Failed to ${action} voting. Please try again.`,
+      });
+    } finally {
+      setVotingActionInProgress(false);
+    }
+  };
 
   // Fetch participants with abort controller to prevent duplicate/stale requests
   const fetchParticipants = useCallback(
@@ -243,6 +327,104 @@ const AdminPanel = () => {
           transition: "margin-left 0.3s, width 0.3s",
         }}
       >
+        {/* Admin Voting Window Controls (Only visible to authenticated administrators) */}
+        {isAdmin && (
+          <Paper
+            elevation={3}
+            sx={{
+              p: 3,
+              mb: 4,
+              borderRadius: 3,
+              bgcolor: "#ffffffdd",
+              backdropFilter: "blur(8px)",
+              border: "1px solid rgba(0,0,0,0.08)",
+            }}
+            aria-label="voting-control-panel"
+          >
+            <Box
+              sx={{
+                display: "flex",
+                flexDirection: { xs: "column", sm: "row" },
+                alignItems: { xs: "flex-start", sm: "center" },
+                justifyContent: "space-between",
+                gap: 2,
+              }}
+            >
+              <Box>
+                <Typography variant="h6" fontWeight="bold">
+                  Voting Window Controls
+                </Typography>
+                <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, mt: 1 }}>
+                  <Typography variant="body2" color="text.secondary">
+                    Current Status:
+                  </Typography>
+                  {votingLoading && votingStatus === null ? (
+                    <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                      <CircularProgress size={16} />
+                      <Typography variant="body2" color="text.secondary">
+                        Checking status...
+                      </Typography>
+                    </Box>
+                  ) : votingStatus === true ? (
+                    <Chip
+                      label="VOTING OPEN"
+                      color="success"
+                      size="small"
+                      sx={{ fontWeight: "bold", px: 1 }}
+                      aria-label="voting-status-open"
+                    />
+                  ) : (
+                    <Chip
+                      label="VOTING CLOSED"
+                      color="error"
+                      size="small"
+                      sx={{ fontWeight: "bold", px: 1 }}
+                      aria-label="voting-status-closed"
+                    />
+                  )}
+                </Box>
+              </Box>
+
+              <Stack direction="row" spacing={2} alignItems="center">
+                <Button
+                  variant="contained"
+                  color="success"
+                  disabled={votingLoading || votingActionInProgress || votingStatus === true}
+                  onClick={() => setVotingConfirmDialog({ open: true, action: "start" })}
+                  aria-label="start-voting-button"
+                  sx={{ textTransform: "none", fontWeight: "bold" }}
+                >
+                  Start Voting
+                </Button>
+                <Button
+                  variant="contained"
+                  color="error"
+                  disabled={votingLoading || votingActionInProgress || votingStatus === false}
+                  onClick={() => setVotingConfirmDialog({ open: true, action: "stop" })}
+                  aria-label="stop-voting-button"
+                  sx={{ textTransform: "none", fontWeight: "bold" }}
+                >
+                  Stop Voting
+                </Button>
+                {votingActionInProgress && (
+                  <CircularProgress size={24} aria-label="voting-action-spinner" />
+                )}
+              </Stack>
+            </Box>
+
+            {votingMessage && (
+              <Alert
+                severity={votingMessage.type}
+                sx={{ mt: 2 }}
+                onClose={() => setVotingMessage(null)}
+                aria-label="voting-message-alert"
+              >
+                {votingMessage.text}
+              </Alert>
+            )}
+          </Paper>
+        )}
+
         {/* Search Box */}
         <Box mb={4} textAlign="center">
           <TextField
@@ -405,6 +587,42 @@ const AdminPanel = () => {
               onClick={() => handleDelete(deleteDialog.id)}
             >
               Delete
+            </Button>
+          </DialogActions>
+        </Dialog>
+
+        {/* Voting Window Action Confirmation Dialog */}
+        <Dialog
+          open={votingConfirmDialog.open}
+          onClose={() =>
+            !votingActionInProgress && setVotingConfirmDialog({ open: false, action: null })
+          }
+        >
+          <DialogTitle>
+            {votingConfirmDialog.action === "start" ? "Confirm Start Voting" : "Confirm Stop Voting"}
+          </DialogTitle>
+          <DialogContent>
+            <DialogContentText>
+              {votingConfirmDialog.action === "start"
+                ? "Are you sure you want to OPEN voting? Authenticated students will immediately be able to cast votes for participants."
+                : "Are you sure you want to CLOSE voting? Students will no longer be able to submit new votes. All existing votes and ledger records will be preserved safely."}
+            </DialogContentText>
+          </DialogContent>
+          <DialogActions>
+            <Button
+              onClick={() => setVotingConfirmDialog({ open: false, action: null })}
+              disabled={votingActionInProgress}
+            >
+              Cancel
+            </Button>
+            <Button
+              color={votingConfirmDialog.action === "start" ? "success" : "error"}
+              variant="contained"
+              onClick={() => handleVotingAction(votingConfirmDialog.action)}
+              disabled={votingActionInProgress}
+              autoFocus
+            >
+              {votingConfirmDialog.action === "start" ? "Open Voting" : "Close Voting"}
             </Button>
           </DialogActions>
         </Dialog>

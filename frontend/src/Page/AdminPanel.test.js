@@ -4,6 +4,7 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 
 const mockAxiosGet = jest.fn();
 const mockAxiosDelete = jest.fn();
+const mockAxiosPost = jest.fn();
 
 jest.mock(
   "axios",
@@ -12,10 +13,12 @@ jest.mock(
     default: {
       get: (...args) => mockAxiosGet(...args),
       delete: (...args) => mockAxiosDelete(...args),
+      post: (...args) => mockAxiosPost(...args),
       isCancel: () => false,
     },
     get: (...args) => mockAxiosGet(...args),
     delete: (...args) => mockAxiosDelete(...args),
+    post: (...args) => mockAxiosPost(...args),
     isCancel: () => false,
   }),
   { virtual: true }
@@ -240,6 +243,292 @@ describe("AdminPanel Component - Pagination for Gandhigiri Expo (Max 80 Projects
 
     expect(mockAxiosDelete).toHaveBeenCalledWith(
       expect.stringContaining("/deleteParticipant/participant-1"),
+      expect.any(Object)
+    );
+  });
+});
+
+describe("AdminPanel Component - Voting Window Controls", () => {
+  function createMockJwt(payload) {
+    const header = btoa(JSON.stringify({ alg: "HS256", typ: "JWT" }));
+    const body = btoa(JSON.stringify(payload));
+    return `${header}.${body}.mockSignature`;
+  }
+
+  const adminToken = createMockJwt({
+    id: "admin123",
+    email: "admin@aitm.edu.in",
+    role: "admin",
+  });
+
+  const studentToken = createMockJwt({
+    id: "student123",
+    email: "student@aitm.edu.in",
+    role: "student",
+  });
+
+  beforeEach(() => {
+    mockAxiosGet.mockReset();
+    mockAxiosDelete.mockReset();
+    mockAxiosPost.mockReset();
+    window.alert = jest.fn();
+
+    // Default mock handler for participants
+    mockAxiosGet.mockImplementation((url) => {
+      if (url.includes("/admin/votingStatus")) {
+        return Promise.resolve({ data: { votingEnabled: false } });
+      }
+      if (url.includes("/allParticipants")) {
+        return Promise.resolve({
+          data: { data: [], meta: { total: 0, page: 1, limit: 50, hasMore: false } },
+        });
+      }
+      return Promise.resolve({ data: {} });
+    });
+  });
+
+  test("1. Admin controls render correctly with CLOSED status when voting is disabled", async () => {
+    Storage.prototype.getItem = jest.fn((key) => {
+      if (key === "token") return adminToken;
+      return null;
+    });
+
+    mockAxiosGet.mockImplementation((url) => {
+      if (url.includes("/admin/votingStatus")) {
+        return Promise.resolve({ data: { votingEnabled: false } });
+      }
+      return Promise.resolve({
+        data: { data: [], meta: { total: 0, page: 1, limit: 50, hasMore: false } },
+      });
+    });
+
+    render(<AdminPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Voting Window Controls")).toBeInTheDocument();
+      expect(screen.getByLabelText("voting-status-closed")).toBeInTheDocument();
+      expect(screen.getByText("VOTING CLOSED")).toBeInTheDocument();
+    });
+
+    const startBtn = screen.getByLabelText("start-voting-button");
+    const stopBtn = screen.getByLabelText("stop-voting-button");
+
+    expect(startBtn).toBeEnabled();
+    expect(stopBtn).toBeDisabled();
+  });
+
+  test("2. Displays OPEN status and enables Stop button when voting is enabled", async () => {
+    Storage.prototype.getItem = jest.fn((key) => {
+      if (key === "token") return adminToken;
+      return null;
+    });
+
+    mockAxiosGet.mockImplementation((url) => {
+      if (url.includes("/admin/votingStatus")) {
+        return Promise.resolve({ data: { votingEnabled: true } });
+      }
+      return Promise.resolve({
+        data: { data: [], meta: { total: 0, page: 1, limit: 50, hasMore: false } },
+      });
+    });
+
+    render(<AdminPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("voting-status-open")).toBeInTheDocument();
+      expect(screen.getByText("VOTING OPEN")).toBeInTheDocument();
+    });
+
+    const startBtn = screen.getByLabelText("start-voting-button");
+    const stopBtn = screen.getByLabelText("stop-voting-button");
+
+    expect(startBtn).toBeDisabled();
+    expect(stopBtn).toBeEnabled();
+  });
+
+  test("3. Confirmation dialog opens on Start Voting and triggers start API", async () => {
+    Storage.prototype.getItem = jest.fn((key) => {
+      if (key === "token") return adminToken;
+      return null;
+    });
+
+    let currentVotingEnabled = false;
+    mockAxiosGet.mockImplementation((url) => {
+      if (url.includes("/admin/votingStatus")) {
+        return Promise.resolve({ data: { votingEnabled: currentVotingEnabled } });
+      }
+      return Promise.resolve({
+        data: { data: [], meta: { total: 0, page: 1, limit: 50, hasMore: false } },
+      });
+    });
+
+    mockAxiosPost.mockImplementation((url) => {
+      if (url.includes("/admin/startVoting")) {
+        currentVotingEnabled = true;
+        return Promise.resolve({
+          data: { message: "Voting has been started successfully", votingEnabled: true },
+        });
+      }
+      return Promise.resolve({ data: {} });
+    });
+
+    render(<AdminPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("start-voting-button")).toBeEnabled();
+    });
+
+    // Click Start Voting
+    fireEvent.click(screen.getByLabelText("start-voting-button"));
+
+    // Confirmation dialog opens
+    expect(screen.getByText("Confirm Start Voting")).toBeInTheDocument();
+    expect(
+      screen.getByText(/Are you sure you want to OPEN voting/i)
+    ).toBeInTheDocument();
+
+    // Confirm action
+    const openBtn = screen.getByRole("button", { name: "Open Voting" });
+    fireEvent.click(openBtn);
+
+    await waitFor(() => {
+      expect(mockAxiosPost).toHaveBeenCalledWith(
+        expect.stringContaining("/admin/startVoting"),
+        {},
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            Authorization: `Bearer ${adminToken}`,
+          }),
+        })
+      );
+    });
+
+    // Status updates to OPEN and success alert displayed
+    await waitFor(() => {
+      expect(screen.getByLabelText("voting-message-alert")).toHaveTextContent(
+        "Voting has been started successfully"
+      );
+      expect(screen.getByLabelText("voting-status-open")).toBeInTheDocument();
+    });
+  });
+
+  test("4. Confirmation dialog opens on Stop Voting and triggers stop API", async () => {
+    Storage.prototype.getItem = jest.fn((key) => {
+      if (key === "token") return adminToken;
+      return null;
+    });
+
+    let currentVotingEnabled = true;
+    mockAxiosGet.mockImplementation((url) => {
+      if (url.includes("/admin/votingStatus")) {
+        return Promise.resolve({ data: { votingEnabled: currentVotingEnabled } });
+      }
+      return Promise.resolve({
+        data: { data: [], meta: { total: 0, page: 1, limit: 50, hasMore: false } },
+      });
+    });
+
+    mockAxiosPost.mockImplementation((url) => {
+      if (url.includes("/admin/stopVoting")) {
+        currentVotingEnabled = false;
+        return Promise.resolve({
+          data: { message: "Voting has been stopped successfully", votingEnabled: false },
+        });
+      }
+      return Promise.resolve({ data: {} });
+    });
+
+    render(<AdminPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("stop-voting-button")).toBeEnabled();
+    });
+
+    // Click Stop Voting
+    fireEvent.click(screen.getByLabelText("stop-voting-button"));
+
+    // Confirmation dialog opens
+    expect(screen.getByText("Confirm Stop Voting")).toBeInTheDocument();
+    expect(
+      screen.getByText(/Are you sure you want to CLOSE voting/i)
+    ).toBeInTheDocument();
+
+    // Confirm action
+    const closeBtn = screen.getByRole("button", { name: "Close Voting" });
+    fireEvent.click(closeBtn);
+
+    await waitFor(() => {
+      expect(mockAxiosPost).toHaveBeenCalledWith(
+        expect.stringContaining("/admin/stopVoting"),
+        {},
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            Authorization: `Bearer ${adminToken}`,
+          }),
+        })
+      );
+    });
+
+    // Status updates to CLOSED and success alert displayed
+    await waitFor(() => {
+      expect(screen.getByLabelText("voting-message-alert")).toHaveTextContent(
+        "Voting has been stopped successfully"
+      );
+      expect(screen.getByLabelText("voting-status-closed")).toBeInTheDocument();
+    });
+  });
+
+  test("5. Displays useful error message when start/stop API call fails", async () => {
+    Storage.prototype.getItem = jest.fn((key) => {
+      if (key === "token") return adminToken;
+      return null;
+    });
+
+    mockAxiosGet.mockImplementation((url) => {
+      if (url.includes("/admin/votingStatus")) {
+        return Promise.resolve({ data: { votingEnabled: false } });
+      }
+      return Promise.resolve({
+        data: { data: [], meta: { total: 0, page: 1, limit: 50, hasMore: false } },
+      });
+    });
+
+    mockAxiosPost.mockRejectedValueOnce({
+      response: { data: { error: "Database lock conflict: Unable to change state" } },
+    });
+
+    render(<AdminPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("start-voting-button")).toBeEnabled();
+    });
+
+    fireEvent.click(screen.getByLabelText("start-voting-button"));
+    fireEvent.click(screen.getByRole("button", { name: "Open Voting" }));
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("voting-message-alert")).toHaveTextContent(
+        "Database lock conflict: Unable to change state"
+      );
+    });
+  });
+
+  test("6. Non-admin users (students or unauthenticated) do NOT see voting controls", async () => {
+    Storage.prototype.getItem = jest.fn((key) => {
+      if (key === "token") return studentToken;
+      return null;
+    });
+
+    render(<AdminPanel />);
+
+    await waitFor(() => {
+      expect(screen.queryByLabelText("voting-control-panel")).not.toBeInTheDocument();
+      expect(screen.queryByText("Voting Window Controls")).not.toBeInTheDocument();
+    });
+
+    // Confirms no administrative request was dispatched by non-admin
+    expect(mockAxiosGet).not.toHaveBeenCalledWith(
+      expect.stringContaining("/admin/votingStatus"),
       expect.any(Object)
     );
   });

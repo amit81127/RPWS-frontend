@@ -5,7 +5,9 @@ const app = require("../index");
 const User = require("../models/userModel");
 const { ParticipantsModel } = require("../models/participantsModels");
 const VoteModel = require("../models/voteModel");
+const SettingModel = require("../models/settingModel");
 const { getJwtSecret } = require("../middleware/auth");
+const { setVotingEnabled } = require("../services/voteService");
 
 describe("API Rate Limiting & Proxy Awareness Tests", () => {
   let secret;
@@ -24,6 +26,8 @@ describe("API Rate Limiting & Proxy Awareness Tests", () => {
     await User.deleteMany({});
     await ParticipantsModel.deleteMany({});
     await VoteModel.deleteMany({});
+    await SettingModel.deleteMany({});
+    await setVotingEnabled(true);
 
     // Reset rate limit override env variables
     delete process.env.RATE_LIMIT_AUTH_MAX;
