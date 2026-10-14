@@ -25,11 +25,17 @@ const voteSchema = new Schema(
   }
 );
 
-// Enforce one vote per voter per contest
-voteSchema.index({ contestId: 1, voterId: 1 }, { unique: true });
+// Enforce at most one vote per voter per participant per contest
+voteSchema.index({ contestId: 1, voterId: 1, participantId: 1 }, { unique: true });
 
-// Query optimization for participant vote aggregation
+// Query optimization for participant vote deletion
 voteSchema.index({ participantId: 1 });
+
+// Covered aggregation index for reconcileVotes ({ $match: { contestId } }, { $group: { _id: "$participantId" } })
+voteSchema.index({ contestId: 1, participantId: 1 });
+
+// Query optimization for voter history (/myVotes)
+voteSchema.index({ contestId: 1, voterId: 1 });
 
 const VoteModel = mongoose.model("Vote", voteSchema);
 

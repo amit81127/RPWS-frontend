@@ -15,6 +15,9 @@ const UserSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+// Compound index for role-based queries sorted by creation (e.g. listAdmins)
+UserSchema.index({ role: 1, createdAt: -1 });
+
 // Hash password before saving if modified
 UserSchema.pre("save", async function (next) {
   if (!this.isModified("password")) return next();

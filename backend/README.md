@@ -177,11 +177,16 @@ curl https://your-app.onrender.com/allParticipantsByVotes
 
 ```json
 {
-  "start": "node index.js",      // Production server
-  "dev": "nodemon index.js",     // Development with auto-reload
-  "test": "jest --runInBand"     // Run tests
+  "start": "node index.js",                // Production server
+  "dev": "nodemon index.js",               // Development with auto-reload
+  "create-admin": "node scripts/createAdmin.js" // Provision administrator account
 }
 ```
+
+## 🏛️ Architecture Documentation
+
+For complete technical specifications, sequence diagrams, and schema details, refer to the root [ARCHITECTURE.md](file:///e:/expovote/ARCHITECTURE.md).
+
 
 ## 🐛 Troubleshooting
 

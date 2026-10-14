@@ -1,4 +1,5 @@
 const rateLimit = require("express-rate-limit");
+const jwt = require("jsonwebtoken");
 
 /**
  * Express Rate Limiting Configuration for ExpoVote / Gandhigiri
@@ -25,7 +26,7 @@ const getLimit = (envVar, testDefault, prodDefault) => {
 // 1. Authentication Limiter (POST /login, POST /signup)
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15-minute window
-  max: () => getLimit("RATE_LIMIT_AUTH_MAX", 100, 15),
+  max: () => getLimit("RATE_LIMIT_AUTH_MAX", 2000, 2000),
   standardHeaders: true,
   legacyHeaders: false,
   message: {
@@ -40,7 +41,7 @@ const authLimiter = rateLimit({
 // Runs before Multer to prevent Cloudinary upload quota exhaustion
 const uploadLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15-minute window
-  max: () => getLimit("RATE_LIMIT_UPLOAD_MAX", 100, 10),
+  max: () => getLimit("RATE_LIMIT_UPLOAD_MAX", 200, 100),
   standardHeaders: true,
   legacyHeaders: false,
   message: {
@@ -55,7 +56,7 @@ const uploadLimiter = rateLimit({
 // Placed after authMiddleware so req.user.id is verified and tamper-proof.
 const voteLimiter = rateLimit({
   windowMs: 60 * 1000, // 1-minute window
-  max: () => getLimit("RATE_LIMIT_VOTE_MAX", 100, 30),
+  max: () => getLimit("RATE_LIMIT_VOTE_MAX", 500, 240),
   standardHeaders: true,
   legacyHeaders: false,
   validate: { keyGeneratorIpFallback: false },
@@ -75,11 +76,32 @@ const voteLimiter = rateLimit({
 });
 
 // 4. Public Read Limiter (GET /allParticipants, GET /allParticipantsByVotes)
+// Campus Wi-Fi NAT aware: authenticated users get their own quota key (reader_<id>).
+// Shared NAT public IP addresses receive an elevated capacity default (10000 req/min)
+// to prevent collective student lockouts during live expo gallery browsing.
 const readLimiter = rateLimit({
   windowMs: 60 * 1000, // 1-minute window
-  max: () => getLimit("RATE_LIMIT_READ_MAX", 500, 120),
+  max: () => getLimit("RATE_LIMIT_READ_MAX", 10000, 10000),
   standardHeaders: true,
   legacyHeaders: false,
+  validate: { keyGeneratorIpFallback: false },
+  keyGenerator: (req) => {
+    if (
+      req.headers &&
+      req.headers.authorization &&
+      typeof req.headers.authorization === "string" &&
+      req.headers.authorization.startsWith("Bearer ")
+    ) {
+      try {
+        const token = req.headers.authorization.split(" ")[1];
+        const decoded = jwt.decode(token);
+        if (decoded && (decoded.id || decoded._id)) {
+          return `reader_${decoded.id || decoded._id}`;
+        }
+      } catch (_) {}
+    }
+    return req.ip;
+  },
   message: {
     error: "Too many requests. Please slow down.",
   },

@@ -22,7 +22,11 @@ participantsSchema.index({ votes: -1, _id: 1 });
 // 2. Participant list feed sorting by createdAt descending
 participantsSchema.index({ createdAt: -1, _id: 1 });
 
-// 3. Team number search lookup (sparse to allow null values without collision)
+// 3. Department-filtered queries
+participantsSchema.index({ department: 1, createdAt: -1, _id: 1 });
+participantsSchema.index({ department: 1, votes: -1, _id: 1 });
+
+// 4. Team number search lookup (sparse to allow null values without collision)
 participantsSchema.index({ teamNo: 1 }, { sparse: true });
 
 module.exports = { participantsSchema };

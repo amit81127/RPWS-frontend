@@ -94,3 +94,8 @@ rating/
 
 -   **Pagination**: Implemented infinite scrolling for Participants and Winners pages to handle large datasets efficiently.
 -   **Performance**: Optimized image loading and API response sizes.
+
+## 🏛️ System Architecture
+
+For a comprehensive breakdown of the system design, data flow diagrams, transactional voting engine, and security policies, see the [Architecture Documentation](file:///e:/expovote/ARCHITECTURE.md).
+
