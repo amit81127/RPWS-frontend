@@ -1,4 +1,6 @@
-// server.js
+// backend/index.js
+// ExpoVote Production Reliability Hardened Express Server
+
 process.env.UV_THREADPOOL_SIZE = process.env.UV_THREADPOOL_SIZE || "64";
 require("dotenv").config();
 
@@ -6,6 +8,7 @@ const express = require("express");
 const compression = require("compression");
 const mongoose = require("mongoose");
 const path = require("path");
+const fs = require("fs");
 const cors = require("cors");
 const jwt = require("jsonwebtoken");
 
@@ -15,16 +18,40 @@ const VoteModel = require("./models/voteModel");
 const SettingModel = require("./models/settingModel");
 const { authMiddleware, adminOnly, getJwtSecret } = require("./middleware/auth");
 const { handleUpload, cloudinary } = require("./middleware/upload");
-const { reconcileVotes, isVotingEnabled, isVotingEnabledSync, setVotingEnabled, recordVoteActivity, getLastVoteActivity } = require("./services/voteService");
-const { authLimiter, uploadLimiter, voteLimiter, readLimiter } = require("./middleware/rateLimiter");
+const {
+  reconcileVotes,
+  isVotingEnabled,
+  isVotingEnabledSync,
+  setVotingEnabled,
+  recordVoteActivity,
+  getLastVoteActivity,
+} = require("./services/voteService");
+const {
+  loginLimiter,
+  signupLimiter,
+  authLimiter,
+  uploadLimiter,
+  voteLimiter,
+  readLimiter,
+  adminLimiter,
+  imageStreamLimiter,
+} = require("./middleware/rateLimiter");
+const createConcurrencyLimiter = require("./middleware/concurrencyLimiter");
 const dbMetrics = require("./services/dbMetrics");
 const { publicFeedCache, createCacheKey } = require("./services/cacheService");
 
-const PORT = parseInt(process.env.PORT) || 5000;
+// Production Reliability Enhancements
+const logger = require("./services/logger");
+const { connectDB, closeDB, getDbHealth } = require("./services/db");
+const requestLogger = require("./middleware/requestLogger");
+const createTimeoutMiddleware = require("./middleware/timeout");
+const { errorHandler, notFoundHandler } = require("./middleware/errorHandler");
+
+const PORT = parseInt(process.env.PORT, 10) || 5000;
 const MONGO_URL = process.env.MONGO_URL;
 
 if (!MONGO_URL && process.env.NODE_ENV === "production") {
-  console.error("FATAL: MONGO_URL environment variable is required in production.");
+  logger.fatal("FATAL: MONGO_URL environment variable is required in production.");
   process.exit(1);
 }
 
@@ -34,6 +61,38 @@ const app = express();
 
 // Trust Render's single upstream reverse proxy hop (Cloudflare / Render load balancer)
 app.set("trust proxy", 1);
+
+// ---------- Server State & In-Flight Request Tracking ----------
+let server = null;
+let isShuttingDown = false;
+let activeRequests = 0;
+let drainResolve = null;
+
+// Middleware: Reject new requests during graceful shutdown and track in-flight requests
+app.use((req, res, next) => {
+  if (isShuttingDown) {
+    res.setHeader("Connection", "close");
+    return res.status(503).json({
+      error: "Server is shutting down. Please retry your request shortly.",
+    });
+  }
+
+  activeRequests++;
+  let decremented = false;
+  const onDone = () => {
+    if (!decremented) {
+      decremented = true;
+      activeRequests = Math.max(0, activeRequests - 1);
+      if (isShuttingDown && activeRequests === 0 && drainResolve) {
+        drainResolve();
+      }
+    }
+  };
+
+  res.on("finish", onDone);
+  res.on("close", onDone);
+  next();
+});
 
 // ---------- 1. CORS Configuration (Registered FIRST) ----------
 const ALLOWED_ORIGINS = [
@@ -74,8 +133,9 @@ const corsOptions = {
     "Accept",
     "Origin",
     "Cache-Control",
+    "X-Request-Id",
   ],
-  exposedHeaders: ["Content-Length", "X-Cache", "ETag"],
+  exposedHeaders: ["Content-Length", "X-Cache", "ETag", "X-Request-Id"],
   credentials: true,
   optionsSuccessStatus: 200,
   maxAge: 86400,
@@ -85,27 +145,62 @@ app.use(cors(corsOptions));
 // In Express 5, wildcard route for options uses regex /(.*)/
 app.options(/(.*)/, cors(corsOptions));
 
-// ---------- 2. Body Parsing, Compression & Static Assets ----------
-// Gzip / Brotli compression for ultra-fast payload delivery
-app.use(compression({
-  threshold: 1024, // Compress responses larger than 1KB
-}));
+// ---------- 2. Structured Request Logging & Latency Measurement ----------
+app.use(requestLogger);
 
-app.use(express.json());
+// ---------- 3. Body Parsing, Compression & Static Assets ----------
+// Gzip / Brotli compression for fast payload delivery
+app.use(
+  compression({
+    threshold: 1024, // Compress responses larger than 1KB
+  })
+);
+
+// Strict JSON body parser bounded to 16KB to prevent oversized bodies from consuming memory
+const strictJsonParser = express.json({ limit: "16kb" });
+app.use(strictJsonParser);
+
+// Dedicated Bounded Concurrency Limiters for heavy workloads
+const reconcileConcurrency = createConcurrencyLimiter({
+  maxConcurrent: 2,
+  maxQueue: 5,
+  queueTimeoutMs: 5000,
+  resourceName: "Vote reconciliation",
+  retryAfterSeconds: 5,
+});
+
+const imageStreamConcurrency = createConcurrencyLimiter({
+  maxConcurrent: 25,
+  maxQueue: 50,
+  queueTimeoutMs: 5000,
+  resourceName: "Image streaming",
+  retryAfterSeconds: 5,
+});
 
 // Serve static uploads
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
-// Request timeout middleware (30s ceiling to prevent connection socket exhaustion)
-app.use((req, res, next) => {
-  res.setTimeout(30000, () => {
-    if (!res.headersSent) {
-      res.status(503).json({ error: "Request timeout: Operation took too long to complete." });
-    }
-  });
-  next();
-});
+// Request timeout middleware (25s ceiling to prevent connection socket exhaustion)
+const requestTimeoutMs = parseInt(process.env.REQUEST_TIMEOUT_MS, 10) || 25000;
+app.use(createTimeoutMiddleware(requestTimeoutMs));
 
+// Helper: Escape user input for safe regular expressions to eliminate ReDoS vulnerabilities
+function escapeRegex(str) {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// Helpers: Check if database connection is active to prevent request buffering and pileups
+function isDbAvailable() {
+  return mongoose.connection.readyState === 1;
+}
+
+function checkDbAvailable() {
+  if (!isDbAvailable()) {
+    const err = new Error("Database service is temporarily unavailable. Please retry shortly.");
+    err.status = 503;
+    throw err;
+  }
+}
 
 // Helper: Normalize image URLs to avoid sending multi-megabyte Base64 strings in list responses
 function resolveImageUrl(req, rawImage, participantId) {
@@ -139,19 +234,23 @@ function resolveImageUrl(req, rawImage, participantId) {
 }
 
 // ---------- IMAGE STREAMING / CACHING ENDPOINT ----------
-app.get("/participantImage/:id", async (req, res) => {
+app.get("/participantImage/:id", imageStreamLimiter, imageStreamConcurrency, async (req, res) => {
   try {
     const { id } = req.params;
-    if (!mongoose.Types.ObjectId.isValid(id)) {
+    if (!mongoose.Types.ObjectId.isValid(id) || !isDbAvailable()) {
       return res.redirect("https://via.placeholder.com/300");
     }
 
-    const participant = await ParticipantsModel.findById(id, { image: 1 }).lean();
+    const participant = await ParticipantsModel.findById(id, { image: 1 }).maxTimeMS(5000).lean();
     if (!participant || !participant.image) {
       return res.redirect("https://via.placeholder.com/300");
     }
 
     if (participant.image.startsWith("data:image/")) {
+      // Guard against unbounded memory allocation from massive base64 payloads
+      if (participant.image.length > 10 * 1024 * 1024) {
+        return res.redirect("https://via.placeholder.com/300");
+      }
       const commaIndex = participant.image.indexOf(",");
       if (commaIndex !== -1) {
         const header = participant.image.substring(0, commaIndex);
@@ -160,7 +259,7 @@ app.get("/participantImage/:id", async (req, res) => {
         const mimeType = mimeMatch ? mimeMatch[1] : "image/jpeg";
         const buffer = Buffer.from(base64Data, "base64");
         res.setHeader("Content-Type", mimeType);
-        res.setHeader("Cache-Control", "public, max-age=86400"); // 24-hour browser cache
+        res.setHeader("Cache-Control", "public, max-age=86400, immutable"); // 24-hour browser & CDN cache
         return res.send(buffer);
       }
     }
@@ -178,7 +277,7 @@ app.get("/participantImage/:id", async (req, res) => {
 // ---------- AUTH ROUTES ----------
 
 // Signup (only student role allowed; passwords hashed once via UserSchema pre-save)
-app.post("/signup", authLimiter, async (req, res) => {
+app.post("/signup", signupLimiter, strictJsonParser, async (req, res, next) => {
   try {
     const { name, email, password } = req.body;
     if (!name || typeof name !== "string" || !name.trim()) {
@@ -197,6 +296,7 @@ app.post("/signup", authLimiter, async (req, res) => {
       return res.status(400).json({ error: "Invalid email address format" });
     }
 
+    checkDbAvailable();
     const exists = await User.findOne({ email: normalizedEmail }, { _id: 1 }).lean();
     if (exists) {
       return res.status(400).json({ error: "Email already registered" });
@@ -223,13 +323,12 @@ app.post("/signup", authLimiter, async (req, res) => {
       user: { id: user._id, name: user.name, email: user.email, role: user.role },
     });
   } catch (err) {
-    console.error("Signup Error:", err);
-    res.status(500).json({ error: "Server error during registration" });
+    next(err);
   }
 });
 
-// Login
-app.post("/login", authLimiter, async (req, res) => {
+// Login (account-keyed rate limiting with strict body parser)
+app.post("/login", strictJsonParser, loginLimiter, async (req, res, next) => {
   try {
     const { email, password } = req.body;
     if (!email || !password) {
@@ -237,6 +336,7 @@ app.post("/login", authLimiter, async (req, res) => {
     }
 
     const normalizedEmail = String(email).trim().toLowerCase();
+    checkDbAvailable();
     const user = await User.findOne(
       { email: normalizedEmail },
       { name: 1, email: 1, password: 1, role: 1 }
@@ -261,22 +361,26 @@ app.post("/login", authLimiter, async (req, res) => {
       user: { id: user._id, name: user.name, email: user.email, role: user.role },
     });
   } catch (err) {
-    console.error("Login Error:", err);
-    res.status(500).json({ error: "Server error during login" });
+    next(err);
   }
 });
 
 // ---------- PARTICIPANT ROUTES ----------
 
-// Add Participant (with rate limiting, JWT authentication, disk upload protection & 2MB max limit)
-app.post("/addParticipants", uploadLimiter, authMiddleware, handleUpload, async (req, res) => {
+// Add Participant (with rate limiting, JWT authentication, disk upload protection & 5MB max limit)
+app.post("/addParticipants", uploadLimiter, authMiddleware, handleUpload, async (req, res, next) => {
   try {
     const { name, department, projectName, email, description, teamNo } = req.body;
     if (!name || typeof name !== "string" || !name.trim()) {
       if (req.file && (req.file.filename || req.file.public_id)) {
         try {
           await cloudinary.uploader.destroy(req.file.filename || req.file.public_id);
-        } catch (_) { }
+        } catch (_) {}
+      }
+      if (req.file && req.file.path && !req.file.path.startsWith("http")) {
+        try {
+          if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+        } catch (_) {}
       }
       return res.status(400).json({ error: "name is required" });
     }
@@ -309,6 +413,7 @@ app.post("/addParticipants", uploadLimiter, authMiddleware, handleUpload, async 
       }
     }
 
+    checkDbAvailable();
     const participant = await ParticipantsModel.create({
       name: name.trim(),
       department: resolvedDept,
@@ -333,21 +438,24 @@ app.post("/addParticipants", uploadLimiter, authMiddleware, handleUpload, async 
     if (req.file && (req.file.filename || req.file.public_id)) {
       try {
         await cloudinary.uploader.destroy(req.file.filename || req.file.public_id);
-      } catch (_) { }
+      } catch (_) {}
     }
-    console.error("Add Participant Error:", err);
-    const status = err.name === "ValidationError" || err.name === "CastError" ? 400 : 500;
-    res.status(status).json({ error: err.message || "Server error" });
+    if (req.file && req.file.path && !req.file.path.startsWith("http")) {
+      try {
+        if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+      } catch (_) {}
+    }
+    next(err);
   }
 });
 
 // Get all participants (with rate limiting, server-enforced pagination max limit 50, stampede-proof TTL caching & lightweight image URLs)
-app.get("/allParticipants", readLimiter, async (req, res) => {
+app.get("/allParticipants", readLimiter, async (req, res, next) => {
   try {
-    const page = parseInt(req.query.page) || 1;
-    const limit = Math.min(Math.max(parseInt(req.query.limit) || 6, 1), 50);
-    const search = req.query.search ? String(req.query.search).trim() : "";
-    const department = req.query.department ? String(req.query.department).trim() : "";
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 6, 1), 50);
+    const rawSearch = (req.query.search ? String(req.query.search).trim() : "").slice(0, 100);
+    const department = (req.query.department ? String(req.query.department).trim() : "").slice(0, 100);
     const sort = req.query.sort ? String(req.query.sort).trim() : "latest";
     const contestId = req.query.contestId ? String(req.query.contestId).trim() : "default";
     const skip = (page - 1) * limit;
@@ -355,17 +463,19 @@ app.get("/allParticipants", readLimiter, async (req, res) => {
     res.setHeader("Cache-Control", "public, max-age=3, stale-while-revalidate=10");
 
     // Deterministic cache key including all query parameters
-    const cacheKey = createCacheKey("participants", { page, limit, search, department, sort, contestId });
+    const cacheKey = createCacheKey("participants", { page, limit, search: rawSearch, department, sort, contestId });
 
     const { data: responsePayload, source } = await publicFeedCache.getOrSet(
       cacheKey,
       async () => {
+        checkDbAvailable();
         const filter = {};
         if (department) filter.department = department;
-        if (search) {
+        if (rawSearch) {
+          const escapedSearch = escapeRegex(rawSearch);
           filter.$or = [
-            { name: { $regex: search, $options: "i" } },
-            { projectName: { $regex: search, $options: "i" } },
+            { name: { $regex: escapedSearch, $options: "i" } },
+            { projectName: { $regex: escapedSearch, $options: "i" } },
           ];
         }
 
@@ -389,9 +499,10 @@ app.get("/allParticipants", readLimiter, async (req, res) => {
             .sort(sortCriteria)
             .skip(skip)
             .limit(limit)
+            .maxTimeMS(10000)
             .lean(),
-          search || department
-            ? ParticipantsModel.countDocuments(filter)
+          rawSearch || department
+            ? ParticipantsModel.countDocuments(filter).maxTimeMS(10000)
             : ParticipantsModel.estimatedDocumentCount(),
         ]);
 
@@ -416,16 +527,15 @@ app.get("/allParticipants", readLimiter, async (req, res) => {
     res.setHeader("X-Cache", source);
     return res.json(responsePayload);
   } catch (err) {
-    console.error("Fetch Participants Error:", err);
-    res.status(500).json({ error: err.message || "Server error" });
+    next(err);
   }
 });
 
 // Get participants sorted by votes desc (Leaderboard with rate limiting, projection optimization, stampede-proof TTL cache & max limit 50)
-app.get("/allParticipantsByVotes", readLimiter, async (req, res) => {
+app.get("/allParticipantsByVotes", readLimiter, async (req, res, next) => {
   try {
-    const page = parseInt(req.query.page) || 1;
-    const limit = Math.min(Math.max(parseInt(req.query.limit) || 6, 1), 50);
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 6, 1), 50);
     const contestId = req.query.contestId ? String(req.query.contestId).trim() : "default";
     const skip = (page - 1) * limit;
 
@@ -436,6 +546,7 @@ app.get("/allParticipantsByVotes", readLimiter, async (req, res) => {
     const { data: responsePayload, source } = await publicFeedCache.getOrSet(
       cacheKey,
       async () => {
+        checkDbAvailable();
         const [participants, total] = await Promise.all([
           ParticipantsModel.find(
             {},
@@ -450,6 +561,7 @@ app.get("/allParticipantsByVotes", readLimiter, async (req, res) => {
             .sort({ votes: -1, _id: 1 })
             .skip(skip)
             .limit(limit)
+            .maxTimeMS(10000)
             .lean(),
           ParticipantsModel.estimatedDocumentCount(),
         ]);
@@ -475,13 +587,12 @@ app.get("/allParticipantsByVotes", readLimiter, async (req, res) => {
     res.setHeader("X-Cache", source);
     return res.json(responsePayload);
   } catch (err) {
-    console.error("Fetch By Votes Error:", err);
-    res.status(500).json({ error: err.message || "Server error" });
+    next(err);
   }
 });
 
 // Get single participant details by ID (with short-TTL caching & validation)
-app.get("/participant/:id", readLimiter, async (req, res) => {
+app.get("/participant/:id", readLimiter, async (req, res, next) => {
   try {
     const { id } = req.params;
     if (!mongoose.Types.ObjectId.isValid(id)) {
@@ -494,7 +605,8 @@ app.get("/participant/:id", readLimiter, async (req, res) => {
     const { data: participant, source } = await publicFeedCache.getOrSet(
       cacheKey,
       async () => {
-        const doc = await ParticipantsModel.findById(id).lean();
+        checkDbAvailable();
+        const doc = await ParticipantsModel.findById(id).maxTimeMS(10000).lean();
         if (!doc) return null;
         return {
           ...doc,
@@ -511,13 +623,12 @@ app.get("/participant/:id", readLimiter, async (req, res) => {
     res.setHeader("X-Cache", source);
     return res.json(participant);
   } catch (err) {
-    console.error("Fetch Participant Detail Error:", err);
-    res.status(500).json({ error: err.message || "Server error" });
+    next(err);
   }
 });
 
 // Vote (Atomic increment + Vote ledger with voter-keyed rate limiting & unique { contestId, voterId } constraint)
-app.post("/voteParticipant/:id", authMiddleware, voteLimiter, async (req, res) => {
+app.post("/voteParticipant/:id", authMiddleware, voteLimiter, strictJsonParser, async (req, res, next) => {
   try {
     const participantId = req.params.id;
     const voterId = req.user.id;
@@ -539,13 +650,15 @@ app.post("/voteParticipant/:id", authMiddleware, voteLimiter, async (req, res) =
       return res.status(400).json({ error: "Invalid voter identifier" });
     }
 
+    checkDbAvailable();
+
     // 1. Parallel Independent Reads: Fetch participant and duplicate-vote check simultaneously
     const [participant, existingVote] = await Promise.all([
-      ParticipantsModel.findById(participantId, { _id: 1, votes: 1 }).lean(),
+      ParticipantsModel.findById(participantId, { _id: 1, votes: 1 }).maxTimeMS(10000).lean(),
       VoteModel.findOne(
         { contestId, voterId, participantId },
         { _id: 1 }
-      ).lean(),
+      ).maxTimeMS(10000).lean(),
     ]);
 
     if (!participant) {
@@ -565,10 +678,23 @@ app.post("/voteParticipant/:id", authMiddleware, voteLimiter, async (req, res) =
     const canUseTransactions = topologyType === "ReplicaSetWithPrimary" || topologyType === "Sharded";
 
     if (canUseTransactions) {
-      const MAX_TRANSACTION_ATTEMPTS = 25;
-      const MAX_COMMIT_ATTEMPTS = 5;
+      const MAX_TRANSACTION_ATTEMPTS = 6; // Bounded to 6 to prevent retry storms
+      const MAX_COMMIT_ATTEMPTS = 3;      // Commit retries for UnknownTransactionCommitResult
+      const TRANSACTION_TIMEOUT_MS = 6000; // Overall 6-second retry deadline
+      const txStartTime = Date.now();
 
       for (let attempt = 1; attempt <= MAX_TRANSACTION_ATTEMPTS; attempt++) {
+        // Guard against client disconnections, shutdown, or retry deadline expiry
+        if (
+          isShuttingDown ||
+          req.timedOut ||
+          req.destroyed ||
+          res.writableEnded ||
+          Date.now() - txStartTime > TRANSACTION_TIMEOUT_MS
+        ) {
+          return;
+        }
+
         let session = null;
         try {
           // Pre-check cutoff in-process
@@ -643,7 +769,7 @@ app.post("/voteParticipant/:id", authMiddleware, voteLimiter, async (req, res) =
           if (session) {
             try {
               await session.abortTransaction();
-            } catch (_) { }
+            } catch (_) {}
           }
 
           // Duplicate-key constraint violation: voter already voted for this participant
@@ -684,10 +810,15 @@ app.post("/voteParticipant/:id", authMiddleware, voteLimiter, async (req, res) =
           );
 
           if (isTransient && !isUnknownCommit && attempt < MAX_TRANSACTION_ATTEMPTS) {
-            // Full-jitter backoff for smooth desynchronization of concurrent transactions
+            // Check deadline budget before sleeping
+            if (Date.now() - txStartTime > TRANSACTION_TIMEOUT_MS) {
+              throw txErr;
+            }
+
+            // Exponential backoff with full jitter to desynchronize concurrent transactions
             const backoffDelay = Math.min(
-              15 + Math.floor(Math.random() * (20 * attempt + 30)),
-              350
+              20 * Math.pow(1.5, attempt - 1) + Math.floor(Math.random() * 40),
+              250
             );
             await new Promise((resolve) => setTimeout(resolve, backoffDelay));
             continue; // Start fresh transaction with a new session on next iteration
@@ -770,37 +901,39 @@ app.post("/voteParticipant/:id", authMiddleware, voteLimiter, async (req, res) =
       }
     }
   } catch (err) {
-    console.error("Vote Error:", err);
-    res.status(500).json({ error: err.message || "Server error" });
+    next(err);
   }
 });
 
 // Get all participant IDs voted by the authenticated user in this contest
-app.get("/myVotes", authMiddleware, readLimiter, async (req, res) => {
+app.get("/myVotes", authMiddleware, readLimiter, async (req, res, next) => {
   try {
     const voterId = req.user.id;
     const contestId = req.query.contestId ? String(req.query.contestId).trim() : "default";
 
+    checkDbAvailable();
+
     const votes = await VoteModel.find(
       { contestId, voterId },
       { participantId: 1 }
-    ).lean();
+    ).maxTimeMS(10000).lean();
 
     const votedParticipantIds = votes.map((v) => v.participantId.toString());
     res.json({ votedParticipantIds, contestId });
   } catch (err) {
-    console.error("Error fetching my votes:", err);
-    res.status(500).json({ error: "Failed to fetch user votes" });
+    next(err);
   }
 });
 
 // Delete participant (Restricted to authenticated administrators)
-app.delete("/deleteParticipant/:id", authMiddleware, adminOnly, async (req, res) => {
+app.delete("/deleteParticipant/:id", authMiddleware, adminOnly, adminLimiter, async (req, res, next) => {
   try {
     const { id } = req.params;
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ error: "Invalid participant identifier" });
     }
+
+    checkDbAvailable();
 
     const deleted = await ParticipantsModel.findByIdAndDelete(id);
     if (!deleted) return res.status(404).json({ error: "Participant not found" });
@@ -811,14 +944,21 @@ app.delete("/deleteParticipant/:id", authMiddleware, adminOnly, async (req, res)
 
     res.json({ message: "Deleted", data: deleted });
   } catch (err) {
-    console.error("Delete Error:", err);
-    res.status(500).json({ error: err.message || "Server error" });
+    next(err);
   }
 });
 
 // Admin Vote Reconciliation Endpoint (Restricted to administrators)
-app.post("/admin/reconcileVotes", authMiddleware, adminOnly, async (req, res) => {
+app.post(
+  "/admin/reconcileVotes",
+  authMiddleware,
+  adminOnly,
+  adminLimiter,
+  reconcileConcurrency,
+  strictJsonParser,
+  async (req, res, next) => {
   try {
+    checkDbAvailable();
     const contestId = req.body && req.body.contestId ? String(req.body.contestId).trim() : "default";
     const result = await reconcileVotes(contestId);
     publicFeedCache.clear();
@@ -827,15 +967,14 @@ app.post("/admin/reconcileVotes", authMiddleware, adminOnly, async (req, res) =>
       ...result,
     });
   } catch (err) {
-    console.error("Reconciliation Error:", err);
-    res.status(500).json({ error: err.message || "Server error during reconciliation" });
+    next(err);
   }
 });
 
 // ---------- ADMIN MANAGEMENT ----------
 
 // Admin Signup (Portal for administrator registration)
-app.post(["/admin/signup", "/admin/register"], authLimiter, async (req, res) => {
+app.post(["/admin/signup", "/admin/register"], authLimiter, strictJsonParser, async (req, res, next) => {
   try {
     const { name, email, password, adminKey } = req.body;
     if (!name || typeof name !== "string" || !name.trim()) {
@@ -861,6 +1000,8 @@ app.post(["/admin/signup", "/admin/register"], authLimiter, async (req, res) => 
     if (!emailRegex.test(normalizedEmail)) {
       return res.status(400).json({ error: "Invalid email address format" });
     }
+
+    checkDbAvailable();
 
     const exists = await User.findOne(
       { email: normalizedEmail },
@@ -910,13 +1051,18 @@ app.post(["/admin/signup", "/admin/register"], authLimiter, async (req, res) => 
       user: { id: newAdmin._id, name: newAdmin.name, email: newAdmin.email, role: newAdmin.role },
     });
   } catch (err) {
-    console.error("Admin Signup Error:", err);
-    res.status(500).json({ error: err.message || "Server error while creating administrator" });
+    next(err);
   }
 });
 
 // Register a new Admin (Restricted to authenticated administrators only)
-app.post(["/admin/registerAdmin", "/admin/createAdmin"], authMiddleware, adminOnly, async (req, res) => {
+app.post(
+  ["/admin/registerAdmin", "/admin/createAdmin"],
+  authMiddleware,
+  adminOnly,
+  adminLimiter,
+  strictJsonParser,
+  async (req, res, next) => {
   try {
     const { name, email, password } = req.body;
     if (!name || typeof name !== "string" || !name.trim()) {
@@ -934,6 +1080,8 @@ app.post(["/admin/registerAdmin", "/admin/createAdmin"], authMiddleware, adminOn
     if (!emailRegex.test(normalizedEmail)) {
       return res.status(400).json({ error: "Invalid email address format" });
     }
+
+    checkDbAvailable();
 
     const exists = await User.findOne(
       { email: normalizedEmail },
@@ -966,19 +1114,20 @@ app.post(["/admin/registerAdmin", "/admin/createAdmin"], authMiddleware, adminOn
       admin: { id: newAdmin._id, name: newAdmin.name, email: newAdmin.email, role: newAdmin.role },
     });
   } catch (err) {
-    console.error("Register Admin Error:", err);
-    res.status(500).json({ error: err.message || "Server error while creating administrator" });
+    next(err);
   }
 });
 
 // List all Administrators (Restricted to authenticated administrators only)
-app.get(["/admin/listAdmins", "/admin/admins"], authMiddleware, adminOnly, async (req, res) => {
+app.get(["/admin/listAdmins", "/admin/admins"], authMiddleware, adminOnly, adminLimiter, async (req, res, next) => {
   try {
+    checkDbAvailable();
     const admins = await User.find(
       { role: "admin" },
       { name: 1, email: 1, role: 1, createdAt: 1 }
     )
       .sort({ createdAt: -1 })
+      .maxTimeMS(10000)
       .lean();
 
     res.json({
@@ -986,30 +1135,30 @@ app.get(["/admin/listAdmins", "/admin/admins"], authMiddleware, adminOnly, async
       total: admins.length,
     });
   } catch (err) {
-    console.error("Fetch Admins Error:", err);
-    res.status(500).json({ error: "Failed to fetch administrators list" });
+    next(err);
   }
 });
 
 // ---------- ADMIN VOTING WINDOW CONTROLS ----------
 
 // Get current voting status (Admin only)
-app.get(["/admin/votingStatus", "/admin/voting-status"], authMiddleware, adminOnly, async (req, res) => {
+app.get(["/admin/votingStatus", "/admin/voting-status"], authMiddleware, adminOnly, adminLimiter, async (req, res, next) => {
   try {
+    checkDbAvailable();
     const enabled = await isVotingEnabled();
     return res.json({
       votingEnabled: enabled,
       message: enabled ? "Voting is currently open" : "Voting is currently closed",
     });
   } catch (err) {
-    console.error("Error retrieving voting status:", err);
-    return res.status(500).json({ error: "Failed to retrieve voting status" });
+    next(err);
   }
 });
 
 // Start voting window (Admin only)
-app.post(["/admin/startVoting", "/admin/start-voting"], authMiddleware, adminOnly, async (req, res) => {
+app.post(["/admin/startVoting", "/admin/start-voting"], authMiddleware, adminOnly, adminLimiter, async (req, res, next) => {
   try {
+    checkDbAvailable();
     const enabled = await setVotingEnabled(true);
     publicFeedCache.clear();
     return res.json({
@@ -1017,14 +1166,14 @@ app.post(["/admin/startVoting", "/admin/start-voting"], authMiddleware, adminOnl
       votingEnabled: enabled,
     });
   } catch (err) {
-    console.error("Error starting voting:", err);
-    return res.status(500).json({ error: "Failed to start voting" });
+    next(err);
   }
 });
 
 // Stop voting window (Admin only)
-app.post(["/admin/stopVoting", "/admin/stop-voting"], authMiddleware, adminOnly, async (req, res) => {
+app.post(["/admin/stopVoting", "/admin/stop-voting"], authMiddleware, adminOnly, adminLimiter, async (req, res, next) => {
   try {
+    checkDbAvailable();
     const enabled = await setVotingEnabled(false);
     publicFeedCache.clear();
     return res.json({
@@ -1032,114 +1181,202 @@ app.post(["/admin/stopVoting", "/admin/stop-voting"], authMiddleware, adminOnly,
       votingEnabled: enabled,
     });
   } catch (err) {
-    console.error("Error stopping voting:", err);
-    return res.status(500).json({ error: "Failed to stop voting" });
+    next(err);
   }
 });
 
-// Health and Telemetry Check with Connection Pool Metrics & Query Latency
-app.get("/health", (req, res) => {
-  const isConnected = mongoose.connection.readyState === 1;
-  const metrics = dbMetrics.getMetrics();
-  const mem = process.memoryUsage();
+// ---------- HEALTH & MONITORING ENDPOINTS ----------
 
-  res.status(200).json({
-    status: isConnected ? "OK" : "DEGRADED",
-    database: isConnected ? "Connected" : (mongoose.connection.readyState === 2 ? "Connecting" : "Disconnected"),
-    time: new Date().toISOString(),
-    uptimeSeconds: Math.floor(process.uptime()),
-    lastVoteActivityAt: getLastVoteActivity(),
-    cache: publicFeedCache.getMetrics(),
-    pool: {
-      ...metrics.pool,
-      maxPoolSize: parseInt(process.env.MONGO_MAX_POOL_SIZE, 10) || 50,
-      minPoolSize: parseInt(process.env.MONGO_MIN_POOL_SIZE, 10) || 5,
-    },
-    dbLatency: metrics.commands,
-    memory: {
-      rssMb: Number((mem.rss / 1024 / 1024).toFixed(1)),
-      heapUsedMb: Number((mem.heapUsed / 1024 / 1024).toFixed(1)),
-    },
-  });
+// Health Check: Lightweight, fast, non-blocking, and free of sensitive information/secrets
+app.get("/health", (req, res) => {
+  const dbHealth = getDbHealth();
+  const uptimeSeconds = Math.floor(process.uptime());
+  const now = new Date().toISOString();
+
+  if (isShuttingDown) {
+    return res.status(503).json({
+      status: "SHUTTING_DOWN",
+      database: dbHealth.state,
+      time: now,
+      uptimeSeconds,
+    });
+  }
+
+  const isHealthy = dbHealth.isConnected;
+  const statusCode = isHealthy ? 200 : 503;
+
+  const responsePayload = {
+    status: isHealthy ? "OK" : "DEGRADED",
+    database: dbHealth.state,
+    time: now,
+    uptimeSeconds,
+  };
+
+  // If detailed diagnostic is requested, include sanitized non-secret operational telemetry
+  if (req.query.detail === "true" || req.query.telemetry === "true") {
+    const configuredMaxPool = parseInt(process.env.MONGO_MAX_POOL_SIZE, 10) || 25;
+    const metrics = dbMetrics.getMetrics(configuredMaxPool);
+    responsePayload.telemetry = {
+      lastVoteActivityAt: getLastVoteActivity(),
+      cache: publicFeedCache.getMetrics(),
+      pool: metrics.pool,
+      operations: metrics.operations,
+      latency: metrics.latency,
+      resources: metrics.resources,
+    };
+  }
+
+  res.status(statusCode).json(responsePayload);
 });
 
-// Root
+// Admin Database Telemetry Diagnostic Endpoint (Restricted to administrators)
+app.get("/admin/db-metrics", authMiddleware, adminOnly, adminLimiter, (req, res) => {
+  const configuredMaxPool = parseInt(process.env.MONGO_MAX_POOL_SIZE, 10) || 25;
+  res.json(dbMetrics.getMetrics(configuredMaxPool));
+});
+
+// Root welcome banner
 app.get("/", (req, res) => res.send("🚀 Rating API Running"));
 
-// ---------- DB connect & start ----------
-mongoose.set("strictQuery", false);
+// ---------- 404 & Centralized Error Handlers ----------
+app.use(notFoundHandler);
+app.use(errorHandler);
 
-// Attach connection life-cycle event listeners
-mongoose.connection.on("error", (err) => {
-  console.error("❌ Mongoose default connection error:", err.message);
-});
-mongoose.connection.on("disconnected", () => {
-  console.warn("⚠️ Mongoose default connection disconnected");
-});
+// ---------- Lifecycle & Graceful Shutdown Management ----------
+const SHUTDOWN_GRACE_PERIOD_MS = parseInt(process.env.SHUTDOWN_TIMEOUT_MS, 10) || 15000;
 
-// Instrument connection for pool and latency telemetry
-dbMetrics.instrument(mongoose.connection);
-
-let server = null;
-let isShuttingDown = false;
-
-function gracefulShutdown(signal) {
-  if (isShuttingDown) return;
+async function gracefulShutdown(signal, exitCode = 0) {
+  if (isShuttingDown) {
+    logger.warn({ signal }, "Shutdown already in progress");
+    return;
+  }
   isShuttingDown = true;
 
-  const shutdownTimeout = setTimeout(() => {
-    console.error("⚠️ Forced shutdown after 10s timeout.");
-    process.exit(1);
-  }, 10000);
-  shutdownTimeout.unref();
+  logger.info(
+    { signal, activeRequests, gracePeriodMs: SHUTDOWN_GRACE_PERIOD_MS },
+    `Starting graceful shutdown [${signal}]. Stopping incoming requests...`
+  );
 
+  // Set bounded timer to force exit if requests or DB hang
+  const forceTimer = setTimeout(() => {
+    logger.error(
+      { activeRequests },
+      `Forced shutdown: Timed out after ${SHUTDOWN_GRACE_PERIOD_MS}ms. Exiting immediately.`
+    );
+    if (server && server.closeAllConnections) {
+      server.closeAllConnections();
+    }
+    process.exit(exitCode !== 0 ? exitCode : 1);
+  }, SHUTDOWN_GRACE_PERIOD_MS);
+
+  if (forceTimer.unref) forceTimer.unref();
+
+  // 1. Stop HTTP server from accepting new socket connections
   if (server) {
-    server.close(async () => {
-      try {
-        await mongoose.connection.close(false);
-        clearTimeout(shutdownTimeout);
-        process.exit(0);
-      } catch (closeErr) {
-        console.error("Error closing MongoDB connection:", closeErr);
-        process.exit(1);
+    server.close((err) => {
+      if (err) {
+        logger.error({ err: { message: err.message } }, "Error closing HTTP server");
+      } else {
+        logger.info("HTTP server closed successfully");
       }
     });
-  } else {
-    mongoose.connection.close(false).then(() => process.exit(0)).catch(() => process.exit(1));
+
+    // Close idle keep-alive connections immediately
+    if (typeof server.closeIdleConnections === "function") {
+      server.closeIdleConnections();
+    }
   }
+
+  // 2. Wait for in-flight requests to finish within the grace period
+  if (activeRequests > 0) {
+    logger.info({ activeRequests }, "Waiting for in-flight requests to complete...");
+    await new Promise((resolve) => {
+      drainResolve = resolve;
+      // Safety interval in case of missed event
+      const checkInterval = setInterval(() => {
+        if (activeRequests <= 0) {
+          clearInterval(checkInterval);
+          resolve();
+        }
+      }, 100);
+      if (checkInterval.unref) checkInterval.unref();
+    });
+    logger.info("All in-flight requests completed successfully");
+  }
+
+  // 3. Close MongoDB connection
+  try {
+    await closeDB(false, 5000);
+    logger.info("MongoDB connection closed cleanly");
+  } catch (dbErr) {
+    logger.error({ err: { message: dbErr.message } }, "Error closing MongoDB connection");
+  }
+
+  clearTimeout(forceTimer);
+  logger.info({ exitCode }, "Graceful shutdown complete. Process exiting.");
+  process.exit(exitCode);
 }
 
-process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
-process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+// OS Process Signal Listeners
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM", 0));
+process.on("SIGINT", () => gracefulShutdown("SIGINT", 0));
 
+// Process Crash Protections: Do not continue running in potentially corrupted state
+process.on("uncaughtException", (err) => {
+  logger.fatal(
+    {
+      err: {
+        message: err.message,
+        name: err.name,
+        stack: err.stack,
+      },
+    },
+    "CRITICAL: Uncaught exception encountered. Initiating controlled shutdown."
+  );
+  gracefulShutdown("uncaughtException", 1);
+});
+
+process.on("unhandledRejection", (reason) => {
+  logger.fatal(
+    {
+      reason:
+        reason instanceof Error
+          ? { message: reason.message, name: reason.name, stack: reason.stack }
+          : reason,
+    },
+    "CRITICAL: Unhandled promise rejection encountered. Initiating controlled shutdown."
+  );
+  gracefulShutdown("unhandledRejection", 1);
+});
+
+// ---------- Server Start (Skipped in Test Environment) ----------
 if (process.env.NODE_ENV !== "test") {
-  // Ensure JWT_SECRET is configured before starting
   try {
     getJwtSecret();
   } catch (e) {
-    console.error("Configuration Error:", e.message);
+    logger.fatal({ err: { message: e.message } }, "Configuration Error");
     process.exit(1);
   }
 
-  // Bind HTTP server immediately so Render health checks and preflight OPTIONS succeed right away
-  server = app.listen(PORT, "0.0.0.0");
+  server = app.listen(PORT, "0.0.0.0", () => {
+    logger.info({ port: PORT, env: process.env.NODE_ENV || "development" }, `🚀 ExpoVote API listening on port ${PORT}`);
+  });
 
-  const mongooseOptions = {
-    serverSelectionTimeoutMS: parseInt(process.env.MONGO_SERVER_SELECTION_TIMEOUT_MS, 10) || 10000,
-    maxPoolSize: parseInt(process.env.MONGO_MAX_POOL_SIZE, 10) || 50,
-    minPoolSize: parseInt(process.env.MONGO_MIN_POOL_SIZE, 10) || 5,
-    maxIdleTimeMS: 30000,
-    socketTimeoutMS: 45000,
-    connectTimeoutMS: 15000,
-    waitQueueTimeoutMS: 10000,
-    monitorCommands: true,
-  };
+  // Tune server socket keep-alive timeouts for Render/Cloudflare reverse proxies
+  server.keepAliveTimeout = 65000;
+  server.headersTimeout = 66000;
+  server.requestTimeout = 30000;
 
-  mongoose
-    .connect(effectiveMongoUrl, mongooseOptions)
-    .catch((err) => {
-      console.error("❌ MongoDB connection error:", err.message);
-    });
+  // Initialize and connect MongoDB singleton
+  connectDB(effectiveMongoUrl).catch((err) => {
+    logger.error({ err: { message: err.message } }, "Initial MongoDB connection attempt failed");
+  });
 }
+
+// Attach helpers for testing and external access
+app.gracefulShutdown = gracefulShutdown;
+app.getActiveRequests = () => activeRequests;
+app.isShuttingDown = () => isShuttingDown;
+app.getServer = () => server;
 
 module.exports = app;

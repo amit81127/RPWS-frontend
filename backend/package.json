@@ -5,7 +5,8 @@
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js",
-    "create-admin": "node scripts/createAdmin.js"
+    "create-admin": "node scripts/createAdmin.js",
+    "test": "cross-env NODE_ENV=test jest --testMatch=\"**/__tests__/**/*.test.js\" --runInBand"
   },
   "author": "",
   "license": "ISC",

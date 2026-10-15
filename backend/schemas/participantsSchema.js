@@ -29,4 +29,8 @@ participantsSchema.index({ department: 1, votes: -1, _id: 1 });
 // 4. Team number search lookup (sparse to allow null values without collision)
 participantsSchema.index({ teamNo: 1 }, { sparse: true });
 
+// 5. Name and Project search indexes for rapid lookup
+participantsSchema.index({ name: 1 });
+participantsSchema.index({ projectName: 1 });
+
 module.exports = { participantsSchema };

@@ -80,62 +80,84 @@ async function setVotingEnabled(enabled) {
   return inMemoryVotingEnabled;
 }
 
+let isReconciliationInProgress = false;
+
 /**
  * Reconciles participant vote counts with the canonical Vote ledger.
  * Handles crashes that may occur between Vote insertion and counter increment.
  * Respects legacyVotes if set.
  * Parallelizes tallies aggregation and participant fetching for maximum throughput.
+ * Single-flight guard prevents multiple concurrent reconciliation runs from overloading MongoDB.
  *
  * @param {string} contestId - The contest identifier (default: "default")
  * @returns {Promise<{ reconciledParticipants: number, totalLedgerVotes: number }>}
  */
 async function reconcileVotes(contestId = "default") {
-  // Parallelize independent queries: Vote ledger aggregation + Participant list fetch
-  const [tallies, allParticipants] = await Promise.all([
-    VoteModel.aggregate([
-      { $match: { contestId } },
-      { $group: { _id: "$participantId", count: { $sum: 1 } } },
-    ]),
-    ParticipantsModel.find(
-      {},
-      { _id: 1, votes: 1, legacyVotes: 1 }
-    ).lean(),
-  ]);
-
-  const tallyMap = new Map();
-  let totalLedgerVotes = 0;
-  for (const item of tallies) {
-    tallyMap.set(item._id.toString(), item.count);
-    totalLedgerVotes += item.count;
+  if (isReconciliationInProgress) {
+    const error = new Error("Vote reconciliation is already in progress. Please wait for the current run to finish.");
+    error.status = 409;
+    throw error;
   }
 
-  let reconciledParticipants = 0;
-  const bulkOps = [];
+  isReconciliationInProgress = true;
 
-  for (const p of allParticipants) {
-    const ledgerCount = tallyMap.get(p._id.toString()) || 0;
-    const baseLegacy = p.legacyVotes || 0;
-    const correctTotal = baseLegacy + ledgerCount;
+  try {
+    // Parallelize independent queries with bounded timeouts:
+    // 1. Vote ledger aggregation (covered by index { contestId: 1, participantId: 1 })
+    // 2. Lean participant list fetch
+    const [tallies, allParticipants] = await Promise.all([
+      VoteModel.aggregate([
+        { $match: { contestId } },
+        { $group: { _id: "$participantId", count: { $sum: 1 } } },
+      ]).option({ maxTimeMS: 25000 }),
+      ParticipantsModel.find(
+        {},
+        { _id: 1, votes: 1, legacyVotes: 1 }
+      )
+        .maxTimeMS(25000)
+        .lean(),
+    ]);
 
-    if (p.votes !== correctTotal) {
-      reconciledParticipants++;
-      bulkOps.push({
-        updateOne: {
-          filter: { _id: p._id },
-          update: { $set: { votes: correctTotal } },
-        },
-      });
+    const tallyMap = new Map();
+    let totalLedgerVotes = 0;
+    for (const item of tallies) {
+      tallyMap.set(item._id.toString(), item.count);
+      totalLedgerVotes += item.count;
     }
-  }
 
-  if (bulkOps.length > 0) {
-    await ParticipantsModel.bulkWrite(bulkOps, { ordered: false });
-  }
+    let reconciledParticipants = 0;
+    const bulkOps = [];
 
-  return {
-    reconciledParticipants,
-    totalLedgerVotes,
-  };
+    for (const p of allParticipants) {
+      const ledgerCount = tallyMap.get(p._id.toString()) || 0;
+      const baseLegacy = p.legacyVotes || 0;
+      const correctTotal = baseLegacy + ledgerCount;
+
+      if (p.votes !== correctTotal) {
+        reconciledParticipants++;
+        bulkOps.push({
+          updateOne: {
+            filter: { _id: p._id },
+            update: { $set: { votes: correctTotal } },
+          },
+        });
+      }
+    }
+
+    // Chunk bulk updates in bounded batches of 250 to prevent driver buffer bloat and timeouts
+    const BATCH_SIZE = 250;
+    for (let i = 0; i < bulkOps.length; i += BATCH_SIZE) {
+      const chunk = bulkOps.slice(i, i + BATCH_SIZE);
+      await ParticipantsModel.bulkWrite(chunk, { ordered: false, maxTimeMS: 15000 });
+    }
+
+    return {
+      reconciledParticipants,
+      totalLedgerVotes,
+    };
+  } finally {
+    isReconciliationInProgress = false;
+  }
 }
 
 let lastVoteActivityAt = null;

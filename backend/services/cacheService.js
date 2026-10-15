@@ -15,6 +15,35 @@ class EnhancedMemoryCache {
       totalHitsLatencyMs: 0,
       totalMissLatencyMs: 0,
     };
+
+    // Periodic sweep to actively prevent memory buildup of expired keys
+    this.cleanupInterval = setInterval(() => {
+      this.pruneExpired();
+    }, 60000);
+    if (this.cleanupInterval.unref) {
+      this.cleanupInterval.unref();
+    }
+  }
+
+  pruneExpired() {
+    const now = Date.now();
+    let pruned = 0;
+    for (const [key, entry] of this.cache.entries()) {
+      if (now > entry.staleUntil) {
+        this.cache.delete(key);
+        pruned++;
+      }
+    }
+    return pruned;
+  }
+
+  destroy() {
+    if (this.cleanupInterval) {
+      clearInterval(this.cleanupInterval);
+      this.cleanupInterval = null;
+    }
+    this.cache.clear();
+    this.inflight.clear();
   }
 
   get(key) {

@@ -58,6 +58,9 @@ const diskUpload = multer({
   limits: {
     fileSize: 5 * 1024 * 1024, // 5 MB limit
     files: 1,
+    fieldNameSize: 100,
+    fieldSize: 1024 * 1024, // 1 MB limit per text field
+    fields: 15,
   },
   fileFilter,
 });

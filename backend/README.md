@@ -9,12 +9,15 @@
 ## 📋 Features
 
 - ✅ JWT-based authentication
-- ✅ User signup/login
+- ✅ User signup/login with brute-force defense
 - ✅ Participant management (CRUD)
-- ✅ Voting system with vote tracking
-- ✅ MongoDB Atlas integration
-- ✅ CORS enabled
-- ✅ Health check endpoint
+- ✅ Voting system with ACID transactions & ledger
+- ✅ Traffic spike & overload hardening (NAT-aware rate limiting, multi-instance Mongo store)
+- ✅ Bounded concurrency semaphores for heavy operations
+- ✅ Strict request body limits (16KB auth/vote, 5MB image uploads)
+- ✅ MongoDB Atlas integration with connection pooling
+- ✅ CORS enabled with preflight caching
+- ✅ Lightweight health check & sanitized telemetry endpoint
 - ✅ Production-ready configuration
 
 ## 🛠️ Tech Stack
@@ -126,13 +129,46 @@ This project includes `render.yaml` with deployment hints.
 
 **Free Tier**: Render offers 750 hours/month free hosting!
 
-## 🔒 Security
-
-- ✅ JWT authentication
-- ✅ Password hashing with bcryptjs (10 salt rounds)
-- ✅ CORS whitelist configuration
-- ✅ Environment variables for sensitive data
-- ✅ `.env` files excluded from Git
+## 🛡️ Traffic Hardening & Rate Limiting (Campus Scale)
+ 
+To protect against sudden traffic surges during college project exhibitions while safeguarding legitimate students sharing one public IP:
+ 
+| Rate Limiter | Scope / Route | Window | Default Limit | NAT / Key Strategy |
+|---|---|---|---|---|
+| **`loginLimiter`** | `POST /login` | 15 min | 30 / account | Keyed by `login_email_<normalized>` (NAT safe). Account brute-force defense without locking out campus peers. |
+| **`signupLimiter`** | `POST /signup` | 15 min | 60 / IP | Keyed by `signup_ip_<ip>`. Accommodates campus computer lab batches while blocking bot floods. |
+| **`voteLimiter`** | `POST /voteParticipant/:id` | 1 min | 240 / voter | Keyed by cryptographically verified JWT `voter_<userId>`. Students on college Wi-Fi never throttle each other. |
+| **`readLimiter`** | `GET /allParticipants*`, `GET /participant/:id`, `GET /myVotes` | 1 min | 10,000 / IP pool | Authenticated students receive separate `reader_<userId>` quota; public shared NAT IP pool gets 10,000 req/min. |
+| **`uploadLimiter`** | `POST /addParticipants` | 15 min | 100 / user | Evaluated BEFORE Multer file disk staging and Cloudinary network uploads. |
+| **`adminLimiter`** | `/admin/*` operations | 15 min | 120 / admin | Keyed by `admin_<userId>` after `authMiddleware` and `adminOnly` verification. |
+| **`imageStreamLimiter`** | `GET /participantImage/:id` | 1 min | 1,200 / IP | Rate limits image proxy and base64 streaming. |
+ 
+### Multi-Instance Distributed Synchronization
+- **`RATE_LIMIT_STORE=mongo`**: Uses a MongoDB Atlas `rate_limits` collection with atomic pipeline updates and automated TTL index cleanup (`expiresAt: 0`). When scaled across multiple Render instances, hit counters remain globally synchronized without Redis.
+- **Resilient Fallback**: Automatically falls back to an internal MemoryStore if the database is temporarily unreachable or running in offline tests.
+ 
+### Bounded Concurrency Semaphores
+- Heavy administrative vote reconciliation (`POST /admin/reconcileVotes`) is bounded to **2 concurrent executions** with a bounded FIFO queue of 5 requests and a 5-second queue timeout.
+- Image base64 streaming (`GET /participantImage/:id`) is bounded to **25 concurrent decodings** with a bounded queue of 50 requests.
+- When queues reach capacity, requests fail fast with `HTTP 429 Too Many Requests` and a `Retry-After: 5` header, insulating memory and database sockets from overload.
+- Critical endpoints (`/health`, `/login`, `/voteParticipant/:id`) are strictly isolated and never gated by heavy operation semaphores.
+ 
+### Request Body & Payload Limits
+- Strict 16KB body parser on `/login`, `/signup`, `/voteParticipant/:id`, and `/admin/*`. Oversized JSON payloads trigger fast HTTP 413 rejection before route execution.
+- General JSON default body parser bounded to 64KB across the application.
+- Multipart form uploads bounded to 5MB file size, 100-character field names, and 1MB max text fields.
+ 
+### Standard HTTP 429 Response Format
+All limiters emit uniform RFC 6585 compliant responses with standard draft-7 headers and `Retry-After`:
+```json
+{
+  "error": "Too many requests. Please slow down and try again.",
+  "retryAfterSeconds": 45,
+  "limit": 100,
+  "remaining": 0,
+  "resetTime": "2026-10-15T03:30:00.000Z"
+}
+```
 
 ## 📊 Database Schema
 
